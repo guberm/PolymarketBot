@@ -139,7 +139,7 @@ def main():
     log.info(f"Scan interval: {config.scan_interval_minutes} min | Markets/cycle: {config.markets_per_cycle}")
     _mode_label = "multi" if config.multi_provider else config.ai_provider
     log.info(f"Ensemble: {config.ensemble_size}x [{_mode_label}]")
-    log.info(f"API budget: cycle={config.max_cycle_api_cost_pct:.0%}, daily={config.max_daily_api_cost_pct:.0%} of bankroll")
+    log.info(f"API budget: cycle=${config.max_cycle_api_cost_usd:.2f}, daily=${config.max_daily_api_cost_usd:.2f}")
     if config.live_trading and not config.allow_unsafe_risk and (
         effective_kelly_fraction(config) != config.kelly_fraction
         or effective_max_position_pct(config) != config.max_position_pct
@@ -587,21 +587,9 @@ def main():
                 if at_capacity:
                     continue
 
-                # Skip estimation if bankroll too low to cover API costs this cycle.
-                # Bot continues running for position review; resumes when USDC returns.
-                MIN_API_RESERVE = 0.30
-                if portfolio.bankroll < MIN_API_RESERVE:
-                    log.info(
-                        f"  Bankroll ${portfolio.bankroll:.2f} < ${MIN_API_RESERVE:.2f} reserve "
-                        f"— stopping estimation this cycle"
-                    )
-                    if con:
-                        print(f"[{ts()}]   API RESERVE LOW (${portfolio.bankroll:.2f}) — skipping remaining evaluations")
-                    break
-
                 cycle_api_cost = portfolio.total_api_cost - cycle_api_cost_start
-                cycle_api_budget = max(0.02, portfolio.bankroll * config.max_cycle_api_cost_pct)
-                daily_api_budget = max(0.05, portfolio.daily_start_value * config.max_daily_api_cost_pct)
+                cycle_api_budget = config.max_cycle_api_cost_usd
+                daily_api_budget = config.max_daily_api_cost_usd
                 if cycle_api_cost >= cycle_api_budget:
                     log.info(
                         f"  API cycle budget reached (${cycle_api_cost:.4f} >= ${cycle_api_budget:.4f}) "

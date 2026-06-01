@@ -61,8 +61,8 @@ public sealed class BotConfig
     public double EnsembleTemperature { get; init; } = 0.7;
     public int MaxEstimateTokens { get; init; } = 1024;
     public double MaxEstimateStd { get; init; } = 0.10;
-    public double MaxCycleApiCostPct { get; init; } = 0.02;
-    public double MaxDailyApiCostPct { get; init; } = 0.10;
+    public double MaxCycleApiCostUsd { get; init; } = 1.00;
+    public double MaxDailyApiCostUsd { get; init; } = 10.00;
 
     // Sizing
     public double KellyFraction { get; init; } = 0.15;
@@ -179,9 +179,10 @@ public sealed class BotConfig
             AzureOpenAiApiVersion = Cfg("azure_openai_api_version", "AZURE_OPENAI_API_VERSION", "2024-02-01"),
             EnsembleSize = int.Parse(Cfg("ensemble_size", "ENSEMBLE_SIZE", "3")),
             EnsembleTemperature = double.Parse(Cfg("ensemble_temperature", "ENSEMBLE_TEMPERATURE", "0.7")),
+            MaxEstimateTokens = int.Parse(Cfg("max_estimate_tokens", "MAX_ESTIMATE_TOKENS", "1024")),
             MaxEstimateStd = double.Parse(Cfg("max_estimate_std", "MAX_ESTIMATE_STD", "0.10")),
-            MaxCycleApiCostPct = double.Parse(Cfg("max_cycle_api_cost_pct", "MAX_CYCLE_API_COST_PCT", "0.02")),
-            MaxDailyApiCostPct = double.Parse(Cfg("max_daily_api_cost_pct", "MAX_DAILY_API_COST_PCT", "0.10")),
+            MaxCycleApiCostUsd = double.Parse(Cfg("max_cycle_api_cost_usd", "MAX_CYCLE_API_COST_USD", "1.00")),
+            MaxDailyApiCostUsd = double.Parse(Cfg("max_daily_api_cost_usd", "MAX_DAILY_API_COST_USD", "10.00")),
             KellyFraction = double.Parse(Cfg("kelly_fraction", "KELLY_FRACTION", "0.15")),
             MinEdge = double.Parse(Cfg("min_edge", "MIN_EDGE", "0.12")),
             MinTradeUsd = double.Parse(Cfg("min_trade_usd", "MIN_TRADE_USD", "0.5")),

@@ -81,8 +81,8 @@ class BotConfig:
     ensemble_temperature: float = 0.7
     max_estimate_tokens: int = 1024
     max_estimate_std: float = 0.10
-    max_cycle_api_cost_pct: float = 0.02
-    max_daily_api_cost_pct: float = 0.10
+    max_cycle_api_cost_usd: float = 1.00
+    max_daily_api_cost_usd: float = 10.00
 
     # Sizing
     kelly_fraction: float = 0.15
@@ -197,8 +197,8 @@ class BotConfig:
             ensemble_temperature=get("ensemble_temperature", 0.7),
             max_estimate_tokens=get("max_estimate_tokens", 1024),
             max_estimate_std=get("max_estimate_std", 0.10),
-            max_cycle_api_cost_pct=get("max_cycle_api_cost_pct", 0.02),
-            max_daily_api_cost_pct=get("max_daily_api_cost_pct", 0.10),
+            max_cycle_api_cost_usd=get("max_cycle_api_cost_usd", 1.00),
+            max_daily_api_cost_usd=get("max_daily_api_cost_usd", 10.00),
             kelly_fraction=get("kelly_fraction", 0.15),
             min_edge=get("min_edge", 0.12),
             min_trade_usd=get("min_trade_usd", 0.5),

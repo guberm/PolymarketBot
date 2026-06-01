@@ -893,8 +893,8 @@ const CONFIG_SCHEMA = [
     { key: 'ensemble_temperature', label: 'Temperature',     ru: 'Температура',      type: 'number', step: 0.1 },
     { key: 'max_estimate_tokens',  label: 'Max Tokens',      ru: 'Макс. токенов',    type: 'number', step: 64 },
     { key: 'max_estimate_std',     label: 'Max Std Dev',     ru: 'Макс. разброс',    type: 'number', step: 0.01 },
-    { key: 'max_cycle_api_cost_pct', label: 'Cycle API Budget %', ru: 'API бюджет цикла %', type: 'number', step: 0.01 },
-    { key: 'max_daily_api_cost_pct', label: 'Daily API Budget %', ru: 'API бюджет дня %',    type: 'number', step: 0.01 },
+    { key: 'max_cycle_api_cost_usd', label: 'Cycle API Budget $', ru: 'API бюджет цикла $', type: 'number', step: 0.05 },
+    { key: 'max_daily_api_cost_usd', label: 'Daily API Budget $', ru: 'API бюджет дня $',    type: 'number', step: 0.50 },
   ]},
   { section: 'SIZING & RISK', ru: 'РАЗМЕРЫ И РИСКИ', fields: [
     { key: 'kelly_fraction',            label: 'Kelly Fraction',    ru: 'Доля Келли',           type: 'number', step: 0.05 },

@@ -123,8 +123,8 @@ log.LogInformation(new string('=', 60));
     log.LogInformation("  Provider:       {P}",  provStr);
     log.LogInformation("  Ensemble:       {N}x  temp={T}  max_std={S:P0}",
         config.EnsembleSize, config.EnsembleTemperature, config.MaxEstimateStd);
-    log.LogInformation("  API budget:     cycle={Cycle:P0}  daily={Daily:P0} of bankroll",
-        config.MaxCycleApiCostPct, config.MaxDailyApiCostPct);
+    log.LogInformation("  API budget:     cycle=${Cycle:F2}  daily=${Daily:F2}",
+        config.MaxCycleApiCostUsd, config.MaxDailyApiCostUsd);
     log.LogInformation("  Min edge:       {E:P0}",  config.MinEdge);
     log.LogInformation("── RISK ─────────────────────────────────────────────────────");
     var effectiveKelly = EffectiveKellyFraction(config);
@@ -698,22 +698,9 @@ while (!cts.Token.IsCancellationRequested)
             if (atCapacity)
                 continue;
 
-            // Skip estimation if bankroll too low to cover API costs for this cycle.
-            // The bot continues running for position review; estimation resumes when
-            // positions exit and USDC returns to the wallet.
-            const double MinApiReserve = 0.30;
-            if (portfolio.Bankroll < MinApiReserve)
-            {
-                log.LogInformation(
-                    "  Bankroll ${Bankroll:F2} < ${Reserve:F2} reserve — stopping estimation this cycle",
-                    portfolio.Bankroll, MinApiReserve);
-                Con($"  API RESERVE LOW (${portfolio.Bankroll:F2}) — skipping remaining evaluations");
-                break;
-            }
-
             var cycleApiCost = portfolio.TotalApiCost - cycleApiCostStart;
-            var cycleApiBudget = Math.Max(0.02, portfolio.Bankroll * config.MaxCycleApiCostPct);
-            var dailyApiBudget = Math.Max(0.05, portfolio.DailyStartValue * config.MaxDailyApiCostPct);
+            var cycleApiBudget = config.MaxCycleApiCostUsd;
+            var dailyApiBudget = config.MaxDailyApiCostUsd;
             if (cycleApiCost >= cycleApiBudget)
             {
                 log.LogInformation(
