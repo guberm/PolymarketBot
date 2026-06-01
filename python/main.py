@@ -81,6 +81,26 @@ def calculate_net_edges(market: MarketInfo, fair_probability: float, entry_buffe
     )
 
 
+def effective_kelly_fraction(config: BotConfig) -> float:
+    return min(config.kelly_fraction, 0.50) if config.live_trading and not config.allow_unsafe_risk else config.kelly_fraction
+
+
+def effective_max_position_pct(config: BotConfig) -> float:
+    return min(config.max_position_pct, 0.15) if config.live_trading and not config.allow_unsafe_risk else config.max_position_pct
+
+
+def effective_max_exposure_pct(config: BotConfig) -> float:
+    return min(config.max_total_exposure_pct, 0.90) if config.live_trading and not config.allow_unsafe_risk else config.max_total_exposure_pct
+
+
+def effective_daily_stop_loss_pct(config: BotConfig) -> float:
+    return min(config.daily_stop_loss_pct, 0.25) if config.live_trading and not config.allow_unsafe_risk else config.daily_stop_loss_pct
+
+
+def effective_max_drawdown_pct(config: BotConfig) -> float:
+    return min(config.max_drawdown_pct, 0.60) if config.live_trading and not config.allow_unsafe_risk else config.max_drawdown_pct
+
+
 def main():
     parser = argparse.ArgumentParser(description="Polymarket trading bot")
     parser.add_argument("--verbose", "-v", action="store_true", help="Debug logging")
@@ -115,17 +135,35 @@ def main():
     log.info("=" * 60)
     log.info("Polymarket Bot")
     log.info(f"Mode: {mode} | Bankroll: ${config.initial_bankroll:.2f}")
-    log.info(f"Min edge: {config.min_edge:.0%} | Max position: {config.max_position_pct:.0%}")
+    log.info(f"Min edge: {config.min_edge:.0%} | Max position: {effective_max_position_pct(config):.0%}")
     log.info(f"Scan interval: {config.scan_interval_minutes} min | Markets/cycle: {config.markets_per_cycle}")
     _mode_label = "multi" if config.multi_provider else config.ai_provider
     log.info(f"Ensemble: {config.ensemble_size}x [{_mode_label}]")
+    log.info(f"API budget: cycle={config.max_cycle_api_cost_pct:.0%}, daily={config.max_daily_api_cost_pct:.0%} of bankroll")
+    if config.live_trading and not config.allow_unsafe_risk and (
+        effective_kelly_fraction(config) != config.kelly_fraction
+        or effective_max_position_pct(config) != config.max_position_pct
+        or effective_max_exposure_pct(config) != config.max_total_exposure_pct
+        or effective_daily_stop_loss_pct(config) != config.daily_stop_loss_pct
+        or effective_max_drawdown_pct(config) != config.max_drawdown_pct
+    ):
+        log.info(
+            "Live guardrails active "
+            f"(configured kelly={config.kelly_fraction:.2f}, pos={config.max_position_pct:.0%}, "
+            f"exp={config.max_total_exposure_pct:.0%}, daily={config.daily_stop_loss_pct:.0%}, "
+            f"dd={config.max_drawdown_pct:.0%})"
+        )
     log.info("=" * 60)
 
     if con:
         print(f"\n{'='*60}")
         print(f"  POLYMARKET BOT — {mode} MODE")
         print(f"  Bankroll: ${config.initial_bankroll:.2f} | Min edge: {config.min_edge:.0%}")
-        print(f"  Risk: {config.max_position_pct:.0%}/pos, {config.max_total_exposure_pct:.0%}/total, {config.daily_stop_loss_pct:.0%}/daily-SL")
+        print(
+            f"  Risk: {effective_max_position_pct(config):.0%}/pos, "
+            f"{effective_max_exposure_pct(config):.0%}/total, "
+            f"{effective_daily_stop_loss_pct(config):.0%}/daily-SL"
+        )
         print(f"  Scan: every {config.scan_interval_minutes}min, {config.markets_per_cycle} markets/cycle")
         print(f"{'='*60}\n")
 
@@ -235,6 +273,7 @@ def main():
             notifier.notify_daily_reset(portfolio)
 
         log.info(f"--- Cycle {cycle} ---")
+        cycle_api_cost_start = portfolio.total_api_cost
 
         # Sync on-chain USDC balance at start of each cycle (live trading only)
         if isinstance(trader, LiveTrader):
@@ -558,6 +597,32 @@ def main():
                     )
                     if con:
                         print(f"[{ts()}]   API RESERVE LOW (${portfolio.bankroll:.2f}) — skipping remaining evaluations")
+                    break
+
+                cycle_api_cost = portfolio.total_api_cost - cycle_api_cost_start
+                cycle_api_budget = max(0.02, portfolio.bankroll * config.max_cycle_api_cost_pct)
+                daily_api_budget = max(0.05, portfolio.daily_start_value * config.max_daily_api_cost_pct)
+                if cycle_api_cost >= cycle_api_budget:
+                    log.info(
+                        f"  API cycle budget reached (${cycle_api_cost:.4f} >= ${cycle_api_budget:.4f}) "
+                        f"— skipping remaining evaluations"
+                    )
+                    if con:
+                        print(
+                            f"[{ts()}]   API BUDGET: cycle ${cycle_api_cost:.4f}/${cycle_api_budget:.4f}, "
+                            f"skipping remaining evaluations"
+                        )
+                    break
+                if portfolio.total_api_cost >= daily_api_budget:
+                    log.info(
+                        f"  API daily budget reached (${portfolio.total_api_cost:.4f} >= ${daily_api_budget:.4f}) "
+                        f"— skipping remaining evaluations"
+                    )
+                    if con:
+                        print(
+                            f"[{ts()}]   API BUDGET: daily ${portfolio.total_api_cost:.4f}/${daily_api_budget:.4f}, "
+                            f"skipping remaining evaluations"
+                        )
                     break
 
                 # Skip estimation if we can't afford the CLOB minimum for either side.

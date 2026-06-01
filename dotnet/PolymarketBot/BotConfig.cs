@@ -61,6 +61,8 @@ public sealed class BotConfig
     public double EnsembleTemperature { get; init; } = 0.7;
     public int MaxEstimateTokens { get; init; } = 1024;
     public double MaxEstimateStd { get; init; } = 0.10;
+    public double MaxCycleApiCostPct { get; init; } = 0.02;
+    public double MaxDailyApiCostPct { get; init; } = 0.10;
 
     // Sizing
     public double KellyFraction { get; init; } = 0.15;
@@ -178,6 +180,8 @@ public sealed class BotConfig
             EnsembleSize = int.Parse(Cfg("ensemble_size", "ENSEMBLE_SIZE", "3")),
             EnsembleTemperature = double.Parse(Cfg("ensemble_temperature", "ENSEMBLE_TEMPERATURE", "0.7")),
             MaxEstimateStd = double.Parse(Cfg("max_estimate_std", "MAX_ESTIMATE_STD", "0.10")),
+            MaxCycleApiCostPct = double.Parse(Cfg("max_cycle_api_cost_pct", "MAX_CYCLE_API_COST_PCT", "0.02")),
+            MaxDailyApiCostPct = double.Parse(Cfg("max_daily_api_cost_pct", "MAX_DAILY_API_COST_PCT", "0.10")),
             KellyFraction = double.Parse(Cfg("kelly_fraction", "KELLY_FRACTION", "0.15")),
             MinEdge = double.Parse(Cfg("min_edge", "MIN_EDGE", "0.12")),
             MinTradeUsd = double.Parse(Cfg("min_trade_usd", "MIN_TRADE_USD", "0.5")),

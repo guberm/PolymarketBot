@@ -123,12 +123,31 @@ log.LogInformation(new string('=', 60));
     log.LogInformation("  Provider:       {P}",  provStr);
     log.LogInformation("  Ensemble:       {N}x  temp={T}  max_std={S:P0}",
         config.EnsembleSize, config.EnsembleTemperature, config.MaxEstimateStd);
+    log.LogInformation("  API budget:     cycle={Cycle:P0}  daily={Daily:P0} of bankroll",
+        config.MaxCycleApiCostPct, config.MaxDailyApiCostPct);
     log.LogInformation("  Min edge:       {E:P0}",  config.MinEdge);
     log.LogInformation("── RISK ─────────────────────────────────────────────────────");
-    log.LogInformation("  Max position:   {P:P0}  kelly={K:F2}",  config.MaxPositionPct, config.KellyFraction);
-    log.LogInformation("  Max exposure:   {E:P0}  max_positions={N}",  config.MaxTotalExposurePct, config.MaxConcurrentPositions);
+    var effectiveKelly = EffectiveKellyFraction(config);
+    var effectiveMaxPosition = EffectiveMaxPositionPct(config);
+    var effectiveMaxExposure = EffectiveMaxExposurePct(config);
+    var effectiveDailyStop = EffectiveDailyStopLossPct(config);
+    var effectiveMaxDrawdown = EffectiveMaxDrawdownPct(config);
+    log.LogInformation("  Max position:   {P:P0}  kelly={K:F2}",  effectiveMaxPosition, effectiveKelly);
+    log.LogInformation("  Max exposure:   {E:P0}  max_positions={N}",  effectiveMaxExposure, config.MaxConcurrentPositions);
     log.LogInformation("  Category cap:   {C:P0}",  config.MaxCategoryExposurePct);
-    log.LogInformation("  Daily SL:       {D:P0}  max_drawdown={M:P0}",  config.DailyStopLossPct, config.MaxDrawdownPct);
+    log.LogInformation("  Daily SL:       {D:P0}  max_drawdown={M:P0}",  effectiveDailyStop, effectiveMaxDrawdown);
+    if (config.LiveTrading && !config.AllowUnsafeRisk &&
+        (effectiveKelly != config.KellyFraction ||
+         effectiveMaxPosition != config.MaxPositionPct ||
+         effectiveMaxExposure != config.MaxTotalExposurePct ||
+         effectiveDailyStop != config.DailyStopLossPct ||
+         effectiveMaxDrawdown != config.MaxDrawdownPct))
+    {
+        log.LogInformation(
+            "  Guardrails:     active (configured kelly={K:F2}, pos={P:P0}, exp={E:P0}, daily={D:P0}, dd={M:P0})",
+            config.KellyFraction, config.MaxPositionPct, config.MaxTotalExposurePct,
+            config.DailyStopLossPct, config.MaxDrawdownPct);
+    }
     log.LogInformation("── SCAN ─────────────────────────────────────────────────────");
     log.LogInformation("  Interval:       {I} min  markets/cycle={M}",  config.ScanIntervalMinutes, config.MarketsPerCycle);
     log.LogInformation("  Min liquidity:  ${L:N0}  min_volume_24h=${V:N0}",  config.MinLiquidity, config.MinVolume24Hr);
@@ -147,7 +166,7 @@ if (console_)
     Console.WriteLine($"\n{new string('=', 60)}");
     Console.WriteLine($"  POLYMARKET BOT (.NET) — {mode} MODE");
     Console.WriteLine($"  Bankroll: ${config.InitialBankroll:F2} | Min edge: {config.MinEdge:P0}");
-    Console.WriteLine($"  Risk: {config.MaxPositionPct:P0}/pos, {config.MaxTotalExposurePct:P0}/total, {config.DailyStopLossPct:P0}/daily-SL");
+    Console.WriteLine($"  Risk: {EffectiveMaxPositionPct(config):P0}/pos, {EffectiveMaxExposurePct(config):P0}/total, {EffectiveDailyStopLossPct(config):P0}/daily-SL");
     Console.WriteLine($"  Scan: every {config.ScanIntervalMinutes}min, {config.MarketsPerCycle} markets/cycle");
     Console.WriteLine($"{new string('=', 60)}\n");
 }
@@ -307,6 +326,7 @@ while (!cts.Token.IsCancellationRequested)
 
     log.LogInformation("--- Cycle {Cycle} ---", cycle);
     estimator.ResetCycle();
+    var cycleApiCostStart = portfolio.TotalApiCost;
 
     // Sync on-chain USDC balance at start of each cycle (live trading only)
     if (trader is LiveTrader ltSync)
@@ -691,6 +711,26 @@ while (!cts.Token.IsCancellationRequested)
                 break;
             }
 
+            var cycleApiCost = portfolio.TotalApiCost - cycleApiCostStart;
+            var cycleApiBudget = Math.Max(0.02, portfolio.Bankroll * config.MaxCycleApiCostPct);
+            var dailyApiBudget = Math.Max(0.05, portfolio.DailyStartValue * config.MaxDailyApiCostPct);
+            if (cycleApiCost >= cycleApiBudget)
+            {
+                log.LogInformation(
+                    "  API cycle budget reached (${Cost:F4} >= ${Budget:F4}) — skipping remaining evaluations",
+                    cycleApiCost, cycleApiBudget);
+                Con($"  API BUDGET: cycle ${cycleApiCost:F4}/${cycleApiBudget:F4}, skipping remaining evaluations");
+                break;
+            }
+            if (portfolio.TotalApiCost >= dailyApiBudget)
+            {
+                log.LogInformation(
+                    "  API daily budget reached (${Cost:F4} >= ${Budget:F4}) — skipping remaining evaluations",
+                    portfolio.TotalApiCost, dailyApiBudget);
+                Con($"  API BUDGET: daily ${portfolio.TotalApiCost:F4}/${dailyApiBudget:F4}, skipping remaining evaluations");
+                break;
+            }
+
             // Skip estimation if we can't afford the CLOB minimum for either side.
             // CLOB enforces: 5 tokens minimum. Use aggressive price (+ 0.02 for 2-tick BUY aggression)
             // so we don't call Claude only to fail at order execution.
@@ -895,6 +935,21 @@ if (console_)
 return 0;
 
 static string Truncate(string s, int maxLen) => s.Length <= maxLen ? s : s[..maxLen] + "...";
+
+static double EffectiveKellyFraction(BotConfig config) =>
+    config.LiveTrading && !config.AllowUnsafeRisk ? Math.Min(config.KellyFraction, 0.50) : config.KellyFraction;
+
+static double EffectiveMaxPositionPct(BotConfig config) =>
+    config.LiveTrading && !config.AllowUnsafeRisk ? Math.Min(config.MaxPositionPct, 0.15) : config.MaxPositionPct;
+
+static double EffectiveMaxExposurePct(BotConfig config) =>
+    config.LiveTrading && !config.AllowUnsafeRisk ? Math.Min(config.MaxTotalExposurePct, 0.90) : config.MaxTotalExposurePct;
+
+static double EffectiveDailyStopLossPct(BotConfig config) =>
+    config.LiveTrading && !config.AllowUnsafeRisk ? Math.Min(config.DailyStopLossPct, 0.25) : config.DailyStopLossPct;
+
+static double EffectiveMaxDrawdownPct(BotConfig config) =>
+    config.LiveTrading && !config.AllowUnsafeRisk ? Math.Min(config.MaxDrawdownPct, 0.60) : config.MaxDrawdownPct;
 
 static (double YesEdge, double NoEdge) CalculateNetEdges(MarketInfo market, double fairProbability, double entryBuffer)
 {
