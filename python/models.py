@@ -60,6 +60,7 @@ class Signal:
     side: Side
     edge: float
     market_price: float  # Price we'd pay for the chosen side
+    execution_price: float  # Estimated taker price after entry buffer
     kelly_fraction: float  # Raw Kelly fraction
     position_size_usd: float
     expected_value: float

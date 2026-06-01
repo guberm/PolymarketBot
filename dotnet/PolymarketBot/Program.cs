@@ -1,6 +1,7 @@
 using System.Runtime.InteropServices;
 using Microsoft.Extensions.Logging;
 using PolymarketBot;
+using PolymarketBot.Models;
 using PolymarketBot.Services;
 
 // ── Enable ANSI colors on Windows ──────────────────────────────
@@ -487,6 +488,36 @@ while (!cts.Token.IsCancellationRequested)
             if (cts.Token.IsCancellationRequested || portfolio.IsHalted)
                 break;
 
+            if (es.ExitReason == "stop_loss" && config.StopLossRequiresNegativeEdge)
+            {
+                var reviewMarket = BuildReviewMarket(es.Position);
+                log.LogInformation("  STOP-LOSS CHECK: re-estimating {Question} before selling",
+                    Truncate(es.Position.Question, 50));
+                var stopEstimate = await estimator.EstimateAsync(reviewMarket, cts.Token);
+                if (stopEstimate is not null)
+                {
+                    portfolio.RecordApiCost(stopEstimate.InputTokensUsed, stopEstimate.OutputTokensUsed);
+                    es.Position.FairEstimateAtEntry = stopEstimate.FairProbability;
+                    var fairForSide = es.Position.Side == Side.YES
+                        ? stopEstimate.FairProbability
+                        : 1.0 - stopEstimate.FairProbability;
+                    var remainingEdge = fairForSide - es.CurrentPrice;
+                    if (remainingEdge > config.ExitEdgeBuffer)
+                    {
+                        log.LogInformation(
+                            "  HOLD stop-loss: {Question} still has edge {Edge:P1} after re-estimate",
+                            Truncate(es.Position.Question, 50), remainingEdge);
+                        Con($"  HOLD stop-loss: {Truncate(es.Position.Question, 45)} edge still {remainingEdge:P1}");
+                        PersistenceService.SaveSnapshot(portfolio.Snapshot(), config.DataDir);
+                        continue;
+                    }
+                }
+                else
+                {
+                    log.LogWarning("  STOP-LOSS CHECK failed: selling with rule-based stop-loss fallback");
+                }
+            }
+
             log.LogInformation(
                 "  EXIT {Reason}: {Question} entry={Entry:F4} -> {Current:F4} (PnL={Pnl:+0.0%;-0.0%})",
                 es.ExitReason, Truncate(es.Position.Question, 50), es.Position.EntryPrice, es.CurrentPrice, es.PnlPct);
@@ -664,7 +695,7 @@ while (!cts.Token.IsCancellationRequested)
             // CLOB enforces: 5 tokens minimum. Use aggressive price (+ 0.02 for 2-tick BUY aggression)
             // so we don't call Claude only to fail at order execution.
             var bestPrice = Math.Min(market.OutcomeYesPrice, market.OutcomeNoPrice);
-            var minClobCost = Math.Max(5.0 * (bestPrice + 0.02), 1.0);
+            var minClobCost = Math.Max(5.0 * Math.Min(bestPrice + config.EntryPriceBuffer, 0.99), 1.0);
             if (portfolio.Bankroll < minClobCost)
             {
                 log.LogInformation(
@@ -702,14 +733,15 @@ while (!cts.Token.IsCancellationRequested)
             var signal = portfolio.GenerateSignal(market, estimate);
             if (signal is null)
             {
-                var yesEdge = estimate.FairProbability - market.OutcomeYesPrice;
-                var noEdge = (1.0 - estimate.FairProbability) - market.OutcomeNoPrice;
+                var (yesEdge, noEdge) = CalculateNetEdges(market, estimate.FairProbability, config.EntryPriceBuffer);
                 var bestEdge = Math.Max(yesEdge, noEdge);
 
                 if (bestEdge > config.MinEdge)
                 {
                     // Edge exists but Kelly size is below 5-token CLOB minimum or MinTradeUsd
-                    var tokenPrice = yesEdge >= noEdge ? market.OutcomeYesPrice : market.OutcomeNoPrice;
+                    var tokenPrice = yesEdge >= noEdge
+                        ? Math.Min(market.OutcomeYesPrice + config.EntryPriceBuffer, 0.99)
+                        : Math.Min(market.OutcomeNoPrice + config.EntryPriceBuffer, 0.99);
                     var clobMin = Math.Round(5.0 * tokenPrice, 2);
                     var kellySide = yesEdge >= noEdge ? "YES" : "NO";
                     log.LogInformation(
@@ -720,7 +752,7 @@ while (!cts.Token.IsCancellationRequested)
                 else
                 {
                     log.LogInformation(
-                        "  {Idx} SKIP (no edge): fair={Fair:P1} vs market={Market:P1} (edge={Edge:+0.0%;-0.0%}, need>{Min:P0})",
+                        "  {Idx} SKIP (no net edge): fair={Fair:P1} vs market={Market:P1} (net_edge={Edge:+0.0%;-0.0%}, need>{Min:P0})",
                         idx, estimate.FairProbability, market.OutcomeYesPrice, bestEdge, config.MinEdge);
                     Con($"  {idx} -> {estimate.FairProbability:P0} (edge={bestEdge:+0.0%;-0.0%}) SKIP");
                 }
@@ -739,12 +771,13 @@ while (!cts.Token.IsCancellationRequested)
 
             // Execute
             log.LogInformation(
-                "  {Idx} >>> BUYING {Side} {Question} ${Size:F2} @ {Price:F3}",
-                idx, signal.Side, Truncate(market.Question, 50), signal.PositionSizeUsd, signal.MarketPrice);
+                "  {Idx} >>> BUYING {Side} {Question} ${Size:F2} @ {Price:F3} (exec~{Exec:F3})",
+                idx, signal.Side, Truncate(market.Question, 50), signal.PositionSizeUsd,
+                signal.MarketPrice, signal.ExecutionPrice);
             if (console_)
             {
                 Con($"  {idx} -> {estimate.FairProbability:P0} edge={signal.Edge:P1}");
-                Con($"  {idx} >>> BUY {signal.Side} ${signal.PositionSizeUsd:F2} @ {signal.MarketPrice:F3}...");
+                Con($"  {idx} >>> BUY {signal.Side} ${signal.PositionSizeUsd:F2} @ ~{signal.ExecutionPrice:F3}...");
             }
 
             var trade = await trader.ExecuteAsync(signal, portfolio, cts.Token);
@@ -810,9 +843,14 @@ while (!cts.Token.IsCancellationRequested)
 
         PersistenceService.SaveSnapshot(portfolio.Snapshot(), config.DataDir);
     }
-    catch (OperationCanceledException)
+    catch (OperationCanceledException) when (cts.Token.IsCancellationRequested)
     {
         break;
+    }
+    catch (OperationCanceledException oce)
+    {
+        log.LogWarning(oce, "Cycle {Cycle} cancelled (network timeout?) — continuing", cycle);
+        Con($"{RED}TIMEOUT: {oce.Message} — retrying next cycle{RESET}");
     }
     catch (Exception ex)
     {
@@ -857,3 +895,41 @@ if (console_)
 return 0;
 
 static string Truncate(string s, int maxLen) => s.Length <= maxLen ? s : s[..maxLen] + "...";
+
+static (double YesEdge, double NoEdge) CalculateNetEdges(MarketInfo market, double fairProbability, double entryBuffer)
+{
+    var yesExecutionPrice = Math.Min(market.OutcomeYesPrice + entryBuffer, 0.99);
+    var noExecutionPrice = Math.Min(market.OutcomeNoPrice + entryBuffer, 0.99);
+    return (
+        fairProbability - yesExecutionPrice,
+        (1.0 - fairProbability) - noExecutionPrice
+    );
+}
+
+static MarketInfo BuildReviewMarket(Position pos)
+{
+    var yesPrice = pos.Side == Side.YES ? pos.CurrentPrice : 1.0 - pos.CurrentPrice;
+    var noPrice = pos.Side == Side.NO ? pos.CurrentPrice : 1.0 - pos.CurrentPrice;
+    yesPrice = Math.Clamp(yesPrice, 0.01, 0.99);
+    noPrice = Math.Clamp(noPrice, 0.01, 0.99);
+
+    return new MarketInfo
+    {
+        ConditionId = pos.ConditionId,
+        Question = pos.Question,
+        Slug = "",
+        OutcomeYesPrice = yesPrice,
+        OutcomeNoPrice = noPrice,
+        TokenIdYes = pos.Side == Side.YES ? pos.TokenId : "",
+        TokenIdNo = pos.Side == Side.NO ? pos.TokenId : "",
+        Liquidity = 0,
+        Volume = 0,
+        Volume24Hr = 0,
+        BestBid = 0,
+        BestAsk = 0,
+        Spread = 0,
+        Category = pos.Category,
+        EventTitle = pos.Question,
+        Description = "Position review re-estimate before stop-loss exit.",
+    };
+}

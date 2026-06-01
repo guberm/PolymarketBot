@@ -20,7 +20,7 @@ from config import BotConfig
 from logger_setup import setup_logging
 from market_scanner import MarketScanner
 from estimator import Estimator
-from models import Trade, TradeAction
+from models import MarketInfo, Side, Trade, TradeAction
 from notifier import Notifier
 from portfolio import Portfolio
 from trader import PaperTrader, LiveTrader
@@ -44,6 +44,41 @@ if sys.platform == "win32":
 def ts():
     """Current timestamp for console prints."""
     return datetime.now().strftime("%H:%M:%S")
+
+
+def build_review_market(pos) -> MarketInfo:
+    yes_price = pos.current_price if pos.side == Side.YES else 1.0 - pos.current_price
+    no_price = pos.current_price if pos.side == Side.NO else 1.0 - pos.current_price
+    yes_price = max(0.01, min(0.99, yes_price))
+    no_price = max(0.01, min(0.99, no_price))
+    return MarketInfo(
+        condition_id=pos.condition_id,
+        question=pos.question,
+        slug="",
+        outcome_yes_price=yes_price,
+        outcome_no_price=no_price,
+        token_id_yes=pos.token_id if pos.side == Side.YES else "",
+        token_id_no=pos.token_id if pos.side == Side.NO else "",
+        liquidity=0.0,
+        volume=0.0,
+        volume_24hr=0.0,
+        best_bid=0.0,
+        best_ask=0.0,
+        spread=0.0,
+        end_date="",
+        category=pos.category,
+        event_title=pos.question,
+        description="Position review re-estimate before stop-loss exit.",
+    )
+
+
+def calculate_net_edges(market: MarketInfo, fair_probability: float, entry_buffer: float) -> tuple[float, float]:
+    yes_execution_price = min(market.outcome_yes_price + entry_buffer, 0.99)
+    no_execution_price = min(market.outcome_no_price + entry_buffer, 0.99)
+    return (
+        fair_probability - yes_execution_price,
+        (1.0 - fair_probability) - no_execution_price,
+    )
 
 
 def main():
@@ -343,6 +378,34 @@ def main():
                 if not running or portfolio.is_halted:
                     break
 
+                if es.exit_reason == "stop_loss" and config.stop_loss_requires_negative_edge:
+                    review_market = build_review_market(es.position)
+                    log.info(f"  STOP-LOSS CHECK: re-estimating {es.position.question[:50]}... before selling")
+                    stop_estimate = estimator.estimate(review_market)
+                    if stop_estimate is not None:
+                        portfolio.record_api_cost(stop_estimate.input_tokens_used, stop_estimate.output_tokens_used)
+                        es.position.fair_estimate_at_entry = stop_estimate.fair_probability
+                        fair_for_side = (
+                            stop_estimate.fair_probability
+                            if es.position.side == Side.YES
+                            else 1.0 - stop_estimate.fair_probability
+                        )
+                        remaining_edge = fair_for_side - es.current_price
+                        if remaining_edge > config.exit_edge_buffer:
+                            log.info(
+                                f"  HOLD stop-loss: {es.position.question[:50]}... "
+                                f"still has edge {remaining_edge:.1%} after re-estimate"
+                            )
+                            if con:
+                                print(
+                                    f"[{ts()}]   HOLD stop-loss: {es.position.question[:45]}... "
+                                    f"edge still {remaining_edge:.1%}"
+                                )
+                            save_snapshot(portfolio.snapshot(), config.data_dir)
+                            continue
+                    else:
+                        log.warning("  STOP-LOSS CHECK failed: selling with rule-based stop-loss fallback")
+
                 log.info(
                     f"  EXIT {es.exit_reason}: {es.position.question[:50]}... "
                     f"entry={es.position.entry_price:.4f} -> {es.current_price:.4f} "
@@ -501,7 +564,7 @@ def main():
                 # Use effective price (+ 0.02 for 2-tick BUY aggression) so we don't call Claude
                 # only to fail at order execution when the actual order price exceeds our cash.
                 best_price = min(market.outcome_yes_price, market.outcome_no_price)
-                min_clob_cost = max(5.0 * (best_price + 0.02), 1.0)
+                min_clob_cost = max(5.0 * min(best_price + config.entry_price_buffer, 0.99), 1.0)
                 if portfolio.bankroll < min_clob_cost:
                     log.info(
                         f"  [{i}/{len(eligible)}] SKIP (can't afford CLOB min ${min_clob_cost:.2f}): "
@@ -540,13 +603,12 @@ def main():
                 # Generate signal
                 signal_obj = portfolio.generate_signal(market, estimate)
                 if signal_obj is None:
-                    yes_edge = estimate.fair_probability - market.outcome_yes_price
-                    no_edge = (1.0 - estimate.fair_probability) - market.outcome_no_price
+                    yes_edge, no_edge = calculate_net_edges(market, estimate.fair_probability, config.entry_price_buffer)
                     best_edge = max(yes_edge, no_edge)
                     log.info(
-                        f"  [{i}/{len(eligible)}] SKIP (no edge): "
+                        f"  [{i}/{len(eligible)}] SKIP (no net edge): "
                         f"fair={estimate.fair_probability:.1%} vs market={market.outcome_yes_price:.1%} "
-                        f"(edge={best_edge:+.1%}, need>{config.min_edge:.0%})"
+                        f"(net_edge={best_edge:+.1%}, need>{config.min_edge:.0%})"
                     )
                     if con:
                         print(f"[{ts()}]   [{i:>2}/{len(eligible)}] -> {estimate.fair_probability:.0%} (edge={best_edge:+.1%}) SKIP")
@@ -566,11 +628,12 @@ def main():
                 # Execute
                 log.info(
                     f"  [{i}/{len(eligible)}] >>> BUYING {signal_obj.side.value} "
-                    f"{market.question[:50]}... ${signal_obj.position_size_usd:.2f} @ {signal_obj.market_price:.3f}"
+                    f"{market.question[:50]}... ${signal_obj.position_size_usd:.2f} "
+                    f"@ {signal_obj.market_price:.3f} (exec~{signal_obj.execution_price:.3f})"
                 )
                 if con:
                     print(f"[{ts()}]   [{i:>2}/{len(eligible)}] -> {estimate.fair_probability:.0%} edge={signal_obj.edge:.1%}")
-                    print(f"[{ts()}]   [{i:>2}/{len(eligible)}] >>> BUY {signal_obj.side.value} ${signal_obj.position_size_usd:.2f} @ {signal_obj.market_price:.3f}...")
+                    print(f"[{ts()}]   [{i:>2}/{len(eligible)}] >>> BUY {signal_obj.side.value} ${signal_obj.position_size_usd:.2f} @ ~{signal_obj.execution_price:.3f}...")
 
                 trade = trader.execute(signal_obj, portfolio)
                 if trade:

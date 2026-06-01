@@ -82,6 +82,9 @@
   "min_edge": 0.10,
   "kelly_fraction": 0.20,
   "min_trade_usd": 0.5,
+  "entry_price_buffer": 0.02,
+  "max_live_order_bankroll_pct": 0.25,
+  "allow_unsafe_risk": false,
 
   "____SECTION_RISK____": "── Risk limits ───────────────────────────────────────────────────────",
 
@@ -100,6 +103,7 @@
   "exit_edge_buffer": 0.05,
   "review_reestimate_threshold_pct": 0.10,
   "review_ensemble_size": 3,
+  "stop_loss_requires_negative_edge": true,
 
   "____SECTION_EMAIL____": "── Email notifications ───────────────────────────────────────────────",
 

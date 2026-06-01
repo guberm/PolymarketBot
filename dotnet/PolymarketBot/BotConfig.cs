@@ -66,6 +66,9 @@ public sealed class BotConfig
     public double KellyFraction { get; init; } = 0.15;
     public double MinEdge { get; init; } = 0.12;
     public double MinTradeUsd { get; init; } = 0.5;
+    public double EntryPriceBuffer { get; init; } = 0.02;
+    public double MaxLiveOrderBankrollPct { get; init; } = 0.25;
+    public bool AllowUnsafeRisk { get; init; } = false;
 
     // Risk
     public double MaxPositionPct { get; set; } = 0.15;
@@ -82,6 +85,7 @@ public sealed class BotConfig
     public double ExitEdgeBuffer { get; init; } = 0.05;
     public double ReviewReestimateThresholdPct { get; init; } = 0.10;
     public int ReviewEnsembleSize { get; init; } = 3;
+    public bool StopLossRequiresNegativeEdge { get; init; } = true;
 
     // Capital
     public double InitialBankroll { get; init; } = 10000.0;
@@ -177,6 +181,9 @@ public sealed class BotConfig
             KellyFraction = double.Parse(Cfg("kelly_fraction", "KELLY_FRACTION", "0.15")),
             MinEdge = double.Parse(Cfg("min_edge", "MIN_EDGE", "0.12")),
             MinTradeUsd = double.Parse(Cfg("min_trade_usd", "MIN_TRADE_USD", "0.5")),
+            EntryPriceBuffer = double.Parse(Cfg("entry_price_buffer", "ENTRY_PRICE_BUFFER", "0.02")),
+            MaxLiveOrderBankrollPct = double.Parse(Cfg("max_live_order_bankroll_pct", "MAX_LIVE_ORDER_BANKROLL_PCT", "0.25")),
+            AllowUnsafeRisk = Cfg("allow_unsafe_risk", "ALLOW_UNSAFE_RISK", "false").Equals("true", StringComparison.OrdinalIgnoreCase),
             MaxPositionPct = double.Parse(Cfg("max_position_pct", "MAX_POSITION_PCT", "0.15")),
             MaxTotalExposurePct = double.Parse(Cfg("max_total_exposure_pct", "MAX_TOTAL_EXPOSURE_PCT", "1.00")),
             MaxCategoryExposurePct = double.Parse(Cfg("max_category_exposure_pct", "MAX_CATEGORY_EXPOSURE_PCT", "0.80")),
@@ -189,6 +196,7 @@ public sealed class BotConfig
             ExitEdgeBuffer = double.Parse(Cfg("exit_edge_buffer", "EXIT_EDGE_BUFFER", "0.05")),
             ReviewReestimateThresholdPct = double.Parse(Cfg("review_reestimate_threshold_pct", "REVIEW_REESTIMATE_THRESHOLD_PCT", "0.10")),
             ReviewEnsembleSize = int.Parse(Cfg("review_ensemble_size", "REVIEW_ENSEMBLE_SIZE", "3")),
+            StopLossRequiresNegativeEdge = Cfg("stop_loss_requires_negative_edge", "STOP_LOSS_REQUIRES_NEGATIVE_EDGE", "true").Equals("true", StringComparison.OrdinalIgnoreCase),
             InitialBankroll = double.Parse(Cfg("initial_bankroll", "INITIAL_BANKROLL", "10000")),
             PolymarketPrivateKey = Cfg("polymarket_private_key", "POLYMARKET_PRIVATE_KEY", ""),
             PolymarketFunderAddress = Cfg("polymarket_funder_address", "POLYMARKET_FUNDER_ADDRESS", ""),

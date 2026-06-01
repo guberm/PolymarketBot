@@ -113,14 +113,17 @@ public sealed class Estimator
 
         if (providerResults.Count == 0) return null;
 
-        // Score: conviction × confidence, where conviction = |mean - marketPrice|, confidence = 1/(std+0.01)
+        // Score provider reliability. Low variance is good, but strong market deviation is not
+        // automatically evidence of skill unless another layer confirms it.
         var marketPrice = (market.OutcomeYesPrice + (1 - market.OutcomeNoPrice)) / 2;
         var scored = providerResults
             .Select(r =>
             {
                 var mean = r.Probs.Average();
                 var std = r.Probs.Count > 1 ? StdDev(r.Probs) : 0.0;
-                var score = Math.Abs(mean - marketPrice) * (1.0 / (std + 0.01));
+                var confidence = 1.0 / (std + 0.01);
+                var marketDeviation = Math.Abs(mean - marketPrice);
+                var score = confidence / (1.0 + 8.0 * marketDeviation);
                 return (r.Provider, Mean: mean, Std: std, Score: score);
             })
             .OrderByDescending(x => x.Score)

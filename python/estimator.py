@@ -148,18 +148,17 @@ class Estimator:
             return None
 
         # ── Score each provider ──────────────────────────────────────────
-        # score = conviction × confidence
-        # conviction = |provider_mean - market_price|  (how far from market consensus)
-        # confidence = 1 / (std_dev + 0.01)            (how consistent its own calls were)
+        # Low variance is useful, but strong market deviation is not automatically
+        # evidence of skill unless another layer confirms it.
         market_price = (market.outcome_yes_price + (1 - market.outcome_no_price)) / 2
 
         scored: list[tuple] = []  # (provider, mean, std, score)
         for provider, probs, _, _, _ in provider_results:
             mean = statistics.mean(probs)
             std = statistics.stdev(probs) if len(probs) > 1 else 0.0
-            conviction = abs(mean - market_price)
             confidence = 1.0 / (std + 0.01)
-            score = conviction * confidence
+            market_deviation = abs(mean - market_price)
+            score = confidence / (1.0 + 8.0 * market_deviation)
             scored.append((provider, mean, std, score))
 
         scored.sort(key=lambda x: x[3], reverse=True)  # highest score first

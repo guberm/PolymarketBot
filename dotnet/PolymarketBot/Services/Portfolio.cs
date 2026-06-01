@@ -80,56 +80,72 @@ public sealed class Portfolio
     public Signal? GenerateSignal(MarketInfo market, Estimate estimate)
     {
         var fair = estimate.FairProbability;
-        var yesEdge = fair - market.OutcomeYesPrice;
-        var noEdge = (1.0 - fair) - market.OutcomeNoPrice;
+        var yesExecutionPrice = EstimateBuyExecutionPrice(market.OutcomeYesPrice);
+        var noExecutionPrice = EstimateBuyExecutionPrice(market.OutcomeNoPrice);
+        var yesEdge = fair - yesExecutionPrice;
+        var noEdge = (1.0 - fair) - noExecutionPrice;
 
         Side side;
-        double edge, marketPrice;
+        double edge, marketPrice, executionPrice;
 
         if (yesEdge > noEdge && yesEdge > _config.MinEdge)
         {
             side = Side.YES;
             edge = yesEdge;
             marketPrice = market.OutcomeYesPrice;
+            executionPrice = yesExecutionPrice;
         }
         else if (noEdge > _config.MinEdge)
         {
             side = Side.NO;
             edge = noEdge;
             marketPrice = market.OutcomeNoPrice;
+            executionPrice = noExecutionPrice;
         }
         else
         {
             return null;
         }
 
-        if (marketPrice <= 0 || marketPrice >= 1) return null;
+        if (executionPrice <= 0 || executionPrice >= 1) return null;
 
         // Kelly criterion: f* = (b*p - q) / b
-        var b = (1.0 / marketPrice) - 1.0;
+        var b = (1.0 / executionPrice) - 1.0;
         var p = side == Side.YES ? fair : 1.0 - fair;
         var q = 1.0 - p;
         var kellyRaw = b > 0 ? (b * p - q) / b : 0.0;
         kellyRaw = Math.Max(0.0, kellyRaw);
 
         // Fractional Kelly + position cap (use portfolio value, not just cash)
-        var kelly = kellyRaw * _config.KellyFraction;
+        var kellyFraction = _config.LiveTrading && !_config.AllowUnsafeRisk
+            ? Math.Min(_config.KellyFraction, 0.50)
+            : _config.KellyFraction;
+        var maxPositionPct = _config.LiveTrading && !_config.AllowUnsafeRisk
+            ? Math.Min(_config.MaxPositionPct, 0.15)
+            : _config.MaxPositionPct;
+        var kelly = kellyRaw * kellyFraction;
         var portfolioVal = Bankroll + TotalExposure();
         var sizeUsd = kelly * portfolioVal;
-        sizeUsd = Math.Min(sizeUsd, portfolioVal * _config.MaxPositionPct);
+        sizeUsd = Math.Min(sizeUsd, portfolioVal * maxPositionPct);
         sizeUsd = Math.Min(sizeUsd, Bankroll); // never exceed available cash
 
         if (sizeUsd < _config.MinTradeUsd) return null;
 
-        // CLOB minimum: 5 tokens at the aggressive price (market price + 2 ticks of BUY aggression).
-        // Default tick size is 0.01, so effective price = price + 0.02.
-        // Using the raw market price would underestimate cost and let orders through that fail at execution.
-        var effectivePrice = marketPrice + 0.02;
-        var minClobUsd = Math.Max(5.0 * effectivePrice, 1.0);
+        // CLOB minimum: 5 tokens at the estimated executable BUY price.
+        var minClobUsd = Math.Max(5.0 * executionPrice, 1.0);
         if (sizeUsd < minClobUsd)
         {
-            _log.LogInformation("Position ${Size:F2} below CLOB minimum ${Min:F2} (5 tokens @ {Price:F3} + 2 ticks)",
-                sizeUsd, minClobUsd, marketPrice);
+            _log.LogInformation("Position ${Size:F2} below CLOB minimum ${Min:F2} (5 tokens @ exec {Price:F3})",
+                sizeUsd, minClobUsd, executionPrice);
+            return null;
+        }
+
+        if (_config.LiveTrading && !_config.AllowUnsafeRisk && Bankroll > 0 &&
+            minClobUsd > Bankroll * _config.MaxLiveOrderBankrollPct)
+        {
+            _log.LogInformation(
+                "Live risk BLOCK: CLOB minimum ${Min:F2} would use {Pct:P0} of bankroll (limit {Limit:P0})",
+                minClobUsd, minClobUsd / Bankroll, _config.MaxLiveOrderBankrollPct);
             return null;
         }
 
@@ -140,10 +156,16 @@ public sealed class Portfolio
             Side = side,
             Edge = edge,
             MarketPrice = marketPrice,
+            ExecutionPrice = executionPrice,
             KellyFraction = kelly,
             PositionSizeUsd = Math.Round(sizeUsd, 2),
             ExpectedValue = Math.Round(sizeUsd * edge, 4),
         };
+    }
+
+    private double EstimateBuyExecutionPrice(double marketPrice)
+    {
+        return Math.Min(marketPrice + _config.EntryPriceBuffer, 0.99);
     }
 
     // -- Risk checks --
@@ -181,7 +203,10 @@ public sealed class Portfolio
 
         var pv = Bankroll + TotalExposure();
         var newExposure = TotalExposure() + signal.PositionSizeUsd;
-        var maxAllowed = pv * _config.MaxTotalExposurePct;
+        var maxTotalExposurePct = _config.LiveTrading && !_config.AllowUnsafeRisk
+            ? Math.Min(_config.MaxTotalExposurePct, 0.90)
+            : _config.MaxTotalExposurePct;
+        var maxAllowed = pv * maxTotalExposurePct;
         if (newExposure > maxAllowed)
         {
             _log.LogInformation("Risk BLOCK: total exposure ${New:F2} > limit ${Limit:F2}", newExposure, maxAllowed);
@@ -200,10 +225,13 @@ public sealed class Portfolio
         // Daily stop loss (include open position value — deployed capital isn't lost)
         var portfolioValue = Bankroll + TotalExposure();
         var dailyPnl = portfolioValue - DailyStartValue;
-        if (dailyPnl < 0 && Math.Abs(dailyPnl) > DailyStartValue * _config.DailyStopLossPct)
+        var dailyStopLossPct = _config.LiveTrading && !_config.AllowUnsafeRisk
+            ? Math.Min(_config.DailyStopLossPct, 0.25)
+            : _config.DailyStopLossPct;
+        if (dailyPnl < 0 && Math.Abs(dailyPnl) > DailyStartValue * dailyStopLossPct)
         {
             _log.LogWarning("HALT: Daily stop loss triggered (PnL=${Pnl:+0.00;-0.00}, limit={Limit:P0})",
-                dailyPnl, _config.DailyStopLossPct);
+                dailyPnl, dailyStopLossPct);
             IsHalted = true;
             return false;
         }
@@ -212,10 +240,13 @@ public sealed class Portfolio
         if (HighWaterMark > 0)
         {
             var drawdown = (HighWaterMark - portfolioValue) / HighWaterMark;
-            if (drawdown > _config.MaxDrawdownPct)
+            var maxDrawdownPct = _config.LiveTrading && !_config.AllowUnsafeRisk
+                ? Math.Min(_config.MaxDrawdownPct, 0.60)
+                : _config.MaxDrawdownPct;
+            if (drawdown > maxDrawdownPct)
             {
                 _log.LogWarning("HALT: Max drawdown {Drawdown:P1} exceeded (limit={Limit:P0})",
-                    drawdown, _config.MaxDrawdownPct);
+                    drawdown, maxDrawdownPct);
                 IsHalted = true;
                 return false;
             }
@@ -370,6 +401,10 @@ public sealed class Portfolio
             }
 
             if (exitReason is null) continue;
+            if (exitReason == "stop_loss" && _config.StopLossRequiresNegativeEdge)
+            {
+                continue;
+            }
 
             var topupCost = 5.0 * pos.CurrentPrice;
             var recoveryValue = pos.Shares * pos.CurrentPrice;

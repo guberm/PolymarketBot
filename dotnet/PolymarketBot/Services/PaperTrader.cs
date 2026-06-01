@@ -7,7 +7,7 @@ public sealed class PaperTrader : ITrader
     public Task<Trade?> ExecuteAsync(Signal signal, Portfolio portfolio, CancellationToken ct = default)
     {
         var market = signal.Market;
-        var price = signal.MarketPrice;
+        var price = signal.ExecutionPrice;
         var sizeUsd = signal.PositionSizeUsd;
         var shares = price > 0 ? sizeUsd / price : 0.0;
         var tokenId = signal.Side == Side.YES ? market.TokenIdYes : market.TokenIdNo;

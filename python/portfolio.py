@@ -66,47 +66,62 @@ class Portfolio:
         """Compare estimate to market price, return Signal if edge exceeds threshold."""
         fair = estimate.fair_probability
 
-        yes_edge = fair - market.outcome_yes_price
-        no_edge = (1.0 - fair) - market.outcome_no_price
+        yes_execution_price = self._estimate_buy_execution_price(market.outcome_yes_price)
+        no_execution_price = self._estimate_buy_execution_price(market.outcome_no_price)
+        yes_edge = fair - yes_execution_price
+        no_edge = (1.0 - fair) - no_execution_price
 
         if yes_edge > no_edge and yes_edge > self.config.min_edge:
             side = Side.YES
             edge = yes_edge
             market_price = market.outcome_yes_price
+            execution_price = yes_execution_price
         elif no_edge > self.config.min_edge:
             side = Side.NO
             edge = no_edge
             market_price = market.outcome_no_price
+            execution_price = no_execution_price
         else:
             return None
 
-        if market_price <= 0 or market_price >= 1:
+        if execution_price <= 0 or execution_price >= 1:
             return None
 
         # Kelly criterion: f* = (b*p - q) / b
-        b = (1.0 / market_price) - 1.0  # decimal odds
+        b = (1.0 / execution_price) - 1.0  # decimal odds
         p = fair if side == Side.YES else (1.0 - fair)
         q = 1.0 - p
         kelly_raw = (b * p - q) / b if b > 0 else 0.0
         kelly_raw = max(0.0, kelly_raw)
 
         # Fractional Kelly + position cap (use portfolio value, not just cash)
-        kelly = kelly_raw * self.config.kelly_fraction
+        kelly_fraction = self.config.kelly_fraction
+        max_position_pct = self.config.max_position_pct
+        if self.config.live_trading and not self.config.allow_unsafe_risk:
+            kelly_fraction = min(kelly_fraction, 0.50)
+            max_position_pct = min(max_position_pct, 0.15)
+        kelly = kelly_raw * kelly_fraction
         portfolio_val = self.bankroll + self.total_exposure()
         size_usd = kelly * portfolio_val
-        size_usd = min(size_usd, portfolio_val * self.config.max_position_pct)
+        size_usd = min(size_usd, portfolio_val * max_position_pct)
         size_usd = min(size_usd, self.bankroll)  # never exceed available cash
 
         if size_usd < self.config.min_trade_usd:
             return None
 
-        # CLOB minimum: 5 tokens at the aggressive price (market price + 2 ticks of BUY aggression).
-        # Default tick size is 0.01, so effective price = price + 0.02.
-        # Using raw market price underestimates cost and lets orders through that fail at execution.
-        effective_price = market_price + 0.02
-        min_clob_usd = max(5.0 * effective_price, 1.0)
+        # CLOB minimum: 5 tokens at the estimated executable BUY price.
+        min_clob_usd = max(5.0 * execution_price, 1.0)
         if size_usd < min_clob_usd:
-            log.debug(f"Position ${size_usd:.2f} below CLOB minimum ${min_clob_usd:.2f} (5 tokens @ {market_price} + 2 ticks)")
+            log.debug(f"Position ${size_usd:.2f} below CLOB minimum ${min_clob_usd:.2f} (5 tokens @ exec {execution_price:.3f})")
+            return None
+
+        if (self.config.live_trading and not self.config.allow_unsafe_risk and self.bankroll > 0
+                and min_clob_usd > self.bankroll * self.config.max_live_order_bankroll_pct):
+            log.info(
+                f"Live risk BLOCK: CLOB minimum ${min_clob_usd:.2f} would use "
+                f"{min_clob_usd / self.bankroll:.0%} of bankroll "
+                f"(limit {self.config.max_live_order_bankroll_pct:.0%})"
+            )
             return None
 
         return Signal(
@@ -115,10 +130,14 @@ class Portfolio:
             side=side,
             edge=edge,
             market_price=market_price,
+            execution_price=execution_price,
             kelly_fraction=kelly,
             position_size_usd=round(size_usd, 2),
             expected_value=round(size_usd * edge, 4),
         )
+
+    def _estimate_buy_execution_price(self, market_price: float) -> float:
+        return min(market_price + self.config.entry_price_buffer, 0.99)
 
     # ── Risk checks ───────────────────────────────────────────────────
 
@@ -145,7 +164,10 @@ class Portfolio:
 
         pv = self.bankroll + self.total_exposure()
         new_exposure = self.total_exposure() + signal.position_size_usd
-        max_allowed = pv * self.config.max_total_exposure_pct
+        max_total_exposure_pct = self.config.max_total_exposure_pct
+        if self.config.live_trading and not self.config.allow_unsafe_risk:
+            max_total_exposure_pct = min(max_total_exposure_pct, 0.90)
+        max_allowed = pv * max_total_exposure_pct
         if new_exposure > max_allowed:
             log.info(f"Risk BLOCK: total exposure ${new_exposure:.2f} > limit ${max_allowed:.2f}")
             return False
@@ -159,16 +181,22 @@ class Portfolio:
         # Daily stop loss (include open position value — deployed capital isn't lost)
         portfolio_value = self.bankroll + self.total_exposure()
         daily_pnl = portfolio_value - self.daily_start_value
-        if daily_pnl < 0 and abs(daily_pnl) > self.daily_start_value * self.config.daily_stop_loss_pct:
-            log.warning(f"HALT: Daily stop loss triggered (PnL=${daily_pnl:+.2f}, limit={self.config.daily_stop_loss_pct:.0%})")
+        daily_stop_loss_pct = self.config.daily_stop_loss_pct
+        if self.config.live_trading and not self.config.allow_unsafe_risk:
+            daily_stop_loss_pct = min(daily_stop_loss_pct, 0.25)
+        if daily_pnl < 0 and abs(daily_pnl) > self.daily_start_value * daily_stop_loss_pct:
+            log.warning(f"HALT: Daily stop loss triggered (PnL=${daily_pnl:+.2f}, limit={daily_stop_loss_pct:.0%})")
             self.is_halted = True
             return False
 
         # Max drawdown from high water mark
         if self.high_water_mark > 0:
             drawdown = (self.high_water_mark - portfolio_value) / self.high_water_mark
-            if drawdown > self.config.max_drawdown_pct:
-                log.warning(f"HALT: Max drawdown {drawdown:.1%} exceeded (limit={self.config.max_drawdown_pct:.0%})")
+            max_drawdown_pct = self.config.max_drawdown_pct
+            if self.config.live_trading and not self.config.allow_unsafe_risk:
+                max_drawdown_pct = min(max_drawdown_pct, 0.60)
+            if drawdown > max_drawdown_pct:
+                log.warning(f"HALT: Max drawdown {drawdown:.1%} exceeded (limit={max_drawdown_pct:.0%})")
                 self.is_halted = True
                 return False
 
@@ -300,6 +328,8 @@ class Portfolio:
                     exit_reason = "edge_gone"
 
             if exit_reason is None:
+                continue
+            if exit_reason == "stop_loss" and self.config.stop_loss_requires_negative_edge:
                 continue
 
             topup_cost = 5.0 * pos.current_price

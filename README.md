@@ -13,7 +13,7 @@ Every N minutes (default 10):
   1. Balance sync — fetch actual on-chain USDC, correct bankroll drift
   2. Ghost check — verify tracked positions still have on-chain tokens; write off strays
   3. Review open positions — fetch current prices, check exit rules:
-     - Stop-loss: sell if position dropped > 25% from entry
+     - Stop-loss: if price dropped >25%, re-estimate first; sell only when edge is gone
      - Take-profit: sell if price reached 0.95+
      - Edge-gone: sell if market moved past original fair estimate
      - Re-estimate: if price moved >10%, re-run AI ensemble to refresh fair value
@@ -23,9 +23,9 @@ Every N minutes (default 10):
   4. Filter new markets by liquidity, volume, spread, and time to resolution
   5. Estimate fair probability (N AI calls → trimmed mean)
      - Skip markets where ensemble std dev > 10% (low confidence)
-     - In multi-provider mode: query all configured providers, score by conviction × confidence
-  6. Find mispricing > 10% between estimate and market price
-  7. Size position using fractional Kelly criterion (max 15% of portfolio)
+     - In multi-provider mode: query all configured providers, score stable providers without rewarding outliers
+  6. Find net mispricing > 10% after expected entry slippage/aggression
+  7. Size position using fractional Kelly criterion at expected executable price
   8. Check risk limits (per-position, per-category, total exposure, daily stop-loss, drawdown)
   9. Execute trade (paper or live via CLOB GTC limit orders, +2 ticks aggression for immediate fills)
   10. Deduct API costs from bankroll, save state, repeat
@@ -264,6 +264,9 @@ Azure also requires: `azure_openai_api_version` (default `2024-02-01`).
 | `min_edge` | `0.10` | Minimum mispricing to trade |
 | `kelly_fraction` | `0.20` | Fractional Kelly multiplier |
 | `min_trade_usd` | `0.5` | Minimum position size |
+| `entry_price_buffer` | `0.02` | Expected BUY slippage/aggression included in net-edge sizing |
+| `max_live_order_bankroll_pct` | `0.25` | Live guardrail: skip if CLOB minimum consumes too much free cash |
+| `allow_unsafe_risk` | `false` | Disable live guardrail clamps for explicit experiments |
 
 ### Risk Limits
 
@@ -286,6 +289,7 @@ Azure also requires: `azure_openai_api_version` (default `2024-02-01`).
 | `exit_edge_buffer` | `0.05` | Buffer before edge-gone exit |
 | `review_reestimate_threshold_pct` | `0.10` | Re-run AI if price moved > 10% |
 | `review_ensemble_size` | `3` | Ensemble size for re-estimation |
+| `stop_loss_requires_negative_edge` | `true` | Confirm stop-loss with fresh estimate before selling |
 
 ### Email Notifications
 
@@ -312,27 +316,29 @@ N independent AI calls → trimmed mean (drop highest + lowest if N ≥ 4) → c
 Each configured provider gets `ceil(ensemble_size / num_providers)` calls. Scoring:
 
 ```text
-conviction  = |provider_mean - market_price|
-confidence  = 1 / (std_dev + 0.01)
-score       = conviction × confidence
+confidence       = 1 / (std_dev + 0.01)
+market_deviation = |provider_mean - market_price|
+score            = confidence / (1 + 8 × market_deviation)
 ```
 
-The highest-scoring provider is marked `⭐` in the log. Final estimate = trimmed mean of per-provider means.
+The highest-scoring provider is marked `⭐` in the log. Final estimate = trimmed mean of per-provider means. Strong disagreement with the market is no longer treated as a virtue by itself; it still affects the final estimate, but the "winner" favors stable, non-extreme providers.
 
 ### Kelly Criterion Sizing
 
 ```text
-b = (1 - market_price) / market_price   (net odds)
-f* = (b × p - q) / b                    (full Kelly)
+execution_price = market_price + entry_price_buffer
+edge = fair_probability - execution_price
+b = (1 - execution_price) / execution_price
+f* = (b × p - q) / b
 bet = kelly_fraction × f* × portfolio_value
 ```
 
-Capped by `max_position_pct` and available bankroll.
+Capped by `max_position_pct` and available bankroll. In live mode, unless `allow_unsafe_risk=true`, the bot also clamps aggressive risk settings and skips trades where the 5-token CLOB minimum would consume too much free cash.
 
 ## Position Review & Exits
 
 - **Ghost check** — verify on-chain token balance; if < 0.1 tokens, write off as ghost (`exit_reason = "ghost"`)
-- **Stop-loss** — sell if price dropped > 25% from entry
+- **Stop-loss** — if price dropped > 25% from entry, re-estimate first; hold if the refreshed fair value still leaves positive edge
 - **Take-profit** — sell if price ≥ 0.95
 - **Edge-gone** — sell if market moved past original fair estimate
 - **Re-estimation** — if price moved > 10%, re-run AI with `review_ensemble_size` calls before deciding to exit
@@ -351,6 +357,25 @@ Five layers:
 Plus **cooldown** (6th layer): blocks re-entry for 2 cycles after any close.
 
 All limits use **portfolio value** (bankroll + open positions), not just free cash.
+
+Live trading has additional guardrails by default:
+- Full Kelly is capped at half-Kelly
+- Per-position exposure is capped at 15%
+- Total exposure is capped at 90%
+- Daily stop-loss is capped at 25%
+- Max drawdown is capped at 60%
+- New entries are skipped if the CLOB minimum exceeds `max_live_order_bankroll_pct` of bankroll
+
+Set `allow_unsafe_risk=true` only for deliberate experiments.
+
+## Trade Analysis
+
+Use the local analyzer to inspect realized PnL by exit reason and surface the worst trades:
+
+```bash
+cd python
+python analyze_trades.py --trades ../data/trades.jsonl
+```
 
 ## Agent Survival
 

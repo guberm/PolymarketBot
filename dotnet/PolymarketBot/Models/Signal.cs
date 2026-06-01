@@ -7,6 +7,7 @@ public sealed class Signal
     public Side Side { get; init; }
     public double Edge { get; init; }
     public double MarketPrice { get; init; }
+    public double ExecutionPrice { get; init; }
     public double KellyFraction { get; init; }
     public double PositionSizeUsd { get; init; }
     public double ExpectedValue { get; init; }

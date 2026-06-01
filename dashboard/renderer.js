@@ -898,12 +898,15 @@ const CONFIG_SCHEMA = [
     { key: 'kelly_fraction',            label: 'Kelly Fraction',    ru: 'Доля Келли',           type: 'number', step: 0.05 },
     { key: 'min_edge',                  label: 'Min Edge',          ru: 'Мин. преимущество',    type: 'number', step: 0.01 },
     { key: 'min_trade_usd',            label: 'Min Trade ($)',     ru: 'Мин. сделка ($)',      type: 'number', step: 0.1 },
+    { key: 'entry_price_buffer',        label: 'Entry Buffer',      ru: 'Буфер входа',          type: 'number', step: 0.01 },
+    { key: 'max_live_order_bankroll_pct', label: 'Max Live Order %', ru: 'Макс. live ордер %',   type: 'number', step: 0.05 },
     { key: 'max_position_pct',          label: 'Max Position %',   ru: 'Макс. позиция %',      type: 'number', step: 0.01 },
     { key: 'max_total_exposure_pct',    label: 'Max Exposure %',   ru: 'Макс. открытые %',     type: 'number', step: 0.05 },
     { key: 'max_category_exposure_pct', label: 'Max Category %',   ru: 'Макс. категория %',    type: 'number', step: 0.05 },
     { key: 'daily_stop_loss_pct',       label: 'Daily Stop-Loss %',ru: 'Дневной стоп-лосс %',  type: 'number', step: 0.01 },
     { key: 'max_drawdown_pct',          label: 'Max Drawdown %',   ru: 'Макс. просадка %',     type: 'number', step: 0.01 },
     { key: 'max_concurrent_positions',  label: 'Max Positions',    ru: 'Макс. позиций',        type: 'number', step: 1 },
+    { key: 'allow_unsafe_risk',         label: 'Allow Unsafe Risk', ru: 'Разрешить риск',       type: 'bool' },
   ]},
   { section: 'EXIT RULES', ru: 'ПРАВИЛА ВЫХОДА', fields: [
     { key: 'enable_position_review',           label: 'Enable Position Review',   ru: 'Мониторинг позиций',     type: 'bool' },
@@ -912,6 +915,7 @@ const CONFIG_SCHEMA = [
     { key: 'exit_edge_buffer',                label: 'Edge-Gone Buffer',         ru: 'Буфер выхода по грани',  type: 'number', step: 0.01 },
     { key: 'review_reestimate_threshold_pct', label: 'Re-estimate Threshold %',  ru: 'Порог переоценки %',     type: 'number', step: 0.01 },
     { key: 'review_ensemble_size',            label: 'Review Ensemble Size',     ru: 'Ансамбль переоценки',    type: 'number', step: 1 },
+    { key: 'stop_loss_requires_negative_edge', label: 'Confirm Stop-Loss',       ru: 'Подтверждать стоп',      type: 'bool' },
   ]},
   { section: 'EMAIL', ru: 'ПОЧТА', fields: [
     { key: 'email_enabled',   label: 'Email Enabled',  ru: 'Email включён',  type: 'bool' },

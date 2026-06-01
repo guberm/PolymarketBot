@@ -14,5 +14,5 @@ public sealed class Position
     public string Category { get; init; } = "other";
     public double OpenedAt { get; init; } = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0;
     public string? OrderId { get; init; }
-    public double FairEstimateAtEntry { get; init; }  // Original Claude estimate (0 = unknown/legacy)
+    public double FairEstimateAtEntry { get; set; }  // Latest fair estimate for exit checks (0 = unknown/legacy)
 }

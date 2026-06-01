@@ -17,7 +17,7 @@ class PaperTrader:
 
     def execute(self, signal: Signal, portfolio: Portfolio) -> Optional[Trade]:
         market = signal.market
-        price = signal.market_price
+        price = signal.execution_price
         size_usd = signal.position_size_usd
         shares = size_usd / price if price > 0 else 0.0
         token_id = market.token_id_yes if signal.side == Side.YES else market.token_id_no
@@ -137,9 +137,9 @@ class LiveTrader:
         from py_clob_client.order_builder.constants import BUY
 
         market = signal.market
-        # Add 2-tick aggression (+0.02) so the buy order crosses the spread
+        # Add configured aggression so the buy order crosses the spread
         # and fills immediately as a taker. Edge >>8% covers this tiny cost.
-        price = min(round(signal.market_price + 0.02, 2), 0.99)
+        price = min(round(signal.market_price + self.config.entry_price_buffer, 2), 0.99)
         size_usd = signal.position_size_usd
         token_id = market.token_id_yes if signal.side == Side.YES else market.token_id_no
 

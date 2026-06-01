@@ -86,6 +86,9 @@ class BotConfig:
     kelly_fraction: float = 0.15
     min_edge: float = 0.12
     min_trade_usd: float = 0.5
+    entry_price_buffer: float = 0.02
+    max_live_order_bankroll_pct: float = 0.25
+    allow_unsafe_risk: bool = False
 
     # Risk
     max_position_pct: float = 0.15
@@ -102,6 +105,7 @@ class BotConfig:
     exit_edge_buffer: float = 0.05
     review_reestimate_threshold_pct: float = 0.10
     review_ensemble_size: int = 3
+    stop_loss_requires_negative_edge: bool = True
 
     # Capital
     initial_bankroll: float = 10000.0
@@ -194,6 +198,9 @@ class BotConfig:
             kelly_fraction=get("kelly_fraction", 0.15),
             min_edge=get("min_edge", 0.12),
             min_trade_usd=get("min_trade_usd", 0.5),
+            entry_price_buffer=get("entry_price_buffer", 0.02),
+            max_live_order_bankroll_pct=get("max_live_order_bankroll_pct", 0.25),
+            allow_unsafe_risk=get("allow_unsafe_risk", False),
             max_position_pct=get("max_position_pct", 0.15),
             max_total_exposure_pct=get("max_total_exposure_pct", 1.00),
             max_category_exposure_pct=get("max_category_exposure_pct", 0.80),
@@ -206,6 +213,7 @@ class BotConfig:
             exit_edge_buffer=get("exit_edge_buffer", 0.05),
             review_reestimate_threshold_pct=get("review_reestimate_threshold_pct", 0.10),
             review_ensemble_size=get("review_ensemble_size", 3),
+            stop_loss_requires_negative_edge=get("stop_loss_requires_negative_edge", True),
             initial_bankroll=get("initial_bankroll", 10000.0),
             polymarket_private_key=get("polymarket_private_key", ""),
             polymarket_funder_address=get("polymarket_funder_address", ""),
