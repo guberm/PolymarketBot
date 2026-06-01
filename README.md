@@ -4,7 +4,7 @@ Autonomous trading agent for [Polymarket](https://polymarket.com) prediction mar
 
 Available in **Python** and **.NET 8** — both implementations share the same logic, config, and data formats.
 
-**The agent pays for its own inference.** API costs are deducted from the bankroll each cycle. If the total portfolio value (bankroll + open positions) drops below $1, the agent halts.
+API costs are tracked against independent USD budgets and are not deducted from trading bankroll. If the total trading portfolio value (bankroll + open positions) drops below $1, the agent halts.
 
 ## How It Works
 
@@ -381,7 +381,7 @@ python analyze_trades.py --trades ../data/trades.jsonl
 
 ## Agent Survival
 
-- API spend is controlled by independent USD budgets, not by trading bankroll
+- API spend is tracked and limited by independent USD budgets; it does not reduce trading bankroll
 - Estimation stops for the cycle/day when API spend reaches `max_cycle_api_cost_usd` or `max_daily_api_cost_usd`
 - Scan skipped when `bankroll < max(min_trade_usd, max_position_pct × bankroll)`
 - Agent halts when `bankroll + exposure < $1`

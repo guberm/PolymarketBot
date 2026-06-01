@@ -641,7 +641,7 @@ def main():
                         print(f"[{ts()}]   [{i:>2}/{len(eligible)}] -> {RED}FAILED{RESET}")
                     continue
 
-                # Agent pays for its own inference
+                # Track provider spend against API budgets without changing trading bankroll.
                 portfolio.record_api_cost(estimate.input_tokens_used, estimate.output_tokens_used)
 
                 # Only halt if total portfolio value is truly depleted

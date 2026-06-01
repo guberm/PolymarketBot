@@ -401,11 +401,10 @@ class Portfolio:
     # ── Cost tracking ─────────────────────────────────────────────────
 
     def record_api_cost(self, input_tokens: int, output_tokens: int) -> None:
-        """Deduct inference cost from bankroll. The agent pays for its own thinking."""
+        """Track inference cost without changing trading bankroll."""
         cost = (input_tokens * INPUT_COST_PER_MTOK / 1_000_000) + \
                (output_tokens * OUTPUT_COST_PER_MTOK / 1_000_000)
         self.total_api_cost += cost
-        self.bankroll -= cost
 
     def remove_ghost_position(self, condition_id: str) -> None:
         """Remove a phantom position that has no actual on-chain tokens.

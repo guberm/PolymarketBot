@@ -483,7 +483,6 @@ public sealed class Portfolio
         var cost = (inputTokens * InputCostPerMTok / 1_000_000.0) +
                    (outputTokens * OutputCostPerMTok / 1_000_000.0);
         TotalApiCost += cost;
-        Bankroll -= cost;
     }
 
     /// <summary>

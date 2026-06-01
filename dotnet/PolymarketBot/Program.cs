@@ -743,7 +743,7 @@ while (!cts.Token.IsCancellationRequested)
                 continue;
             }
 
-            // Agent pays for inference
+            // Track provider spend against API budgets without changing trading bankroll.
             portfolio.RecordApiCost(estimate.InputTokensUsed, estimate.OutputTokensUsed);
 
             // Only halt if total portfolio value (not just free USDC) is depleted
