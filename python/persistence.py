@@ -41,6 +41,9 @@ def save_snapshot(snapshot: PortfolioSnapshot, data_dir: str) -> None:
         "total_trades": snapshot.total_trades,
         "is_halted": snapshot.is_halted,
         "last_updated": snapshot.last_updated,
+        "total_api_cost": snapshot.total_api_cost,
+        "daily_api_cost": snapshot.daily_api_cost,
+        "daily_tracking_date": snapshot.daily_tracking_date,
     }
     tmp = path + ".tmp"
     with open(tmp, "w") as f:
@@ -66,6 +69,9 @@ def load_snapshot(data_dir: str) -> Optional[PortfolioSnapshot]:
         total_trades=data["total_trades"],
         is_halted=data["is_halted"],
         last_updated=data.get("last_updated", time.time()),
+        total_api_cost=data.get("total_api_cost", 0.0),
+        daily_api_cost=data.get("daily_api_cost", 0.0),
+        daily_tracking_date=data.get("daily_tracking_date", ""),
     )
 
 

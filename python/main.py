@@ -249,7 +249,6 @@ def main():
 
     signal.signal(signal.SIGINT, handle_shutdown)
 
-    last_daily_reset = datetime.now(timezone.utc).date()
     cycle = 0
 
     while running:
@@ -263,13 +262,12 @@ def main():
             break
 
         # Daily reset check
-        today = datetime.now(timezone.utc).date()
-        if today != last_daily_reset:
-            portfolio.reset_daily()
-            last_daily_reset = today
-            log.info(f"New day — daily start value reset to ${portfolio.bankroll:.2f}")
+        today = datetime.now(timezone.utc).date().isoformat()
+        if today != portfolio.daily_tracking_date:
+            portfolio.reset_daily(today)
+            log.info(f"New day — daily start value reset to ${portfolio.bankroll:.2f}; daily API cost reset")
             if con:
-                print(f"[{ts()}] NEW DAY: daily PnL reset, start=${portfolio.bankroll:.2f}")
+                print(f"[{ts()}] NEW DAY: daily PnL/API reset, start=${portfolio.bankroll:.2f}")
             notifier.notify_daily_reset(portfolio)
 
         log.info(f"--- Cycle {cycle} ---")
@@ -601,14 +599,14 @@ def main():
                             f"skipping remaining evaluations"
                         )
                     break
-                if portfolio.total_api_cost >= daily_api_budget:
+                if portfolio.daily_api_cost >= daily_api_budget:
                     log.info(
-                        f"  API daily budget reached (${portfolio.total_api_cost:.4f} >= ${daily_api_budget:.4f}) "
+                        f"  API daily budget reached (${portfolio.daily_api_cost:.4f} >= ${daily_api_budget:.4f}) "
                         f"— skipping remaining evaluations"
                     )
                     if con:
                         print(
-                            f"[{ts()}]   API BUDGET: daily ${portfolio.total_api_cost:.4f}/${daily_api_budget:.4f}, "
+                            f"[{ts()}]   API BUDGET: daily ${portfolio.daily_api_cost:.4f}/${daily_api_budget:.4f}, "
                             f"skipping remaining evaluations"
                         )
                     break

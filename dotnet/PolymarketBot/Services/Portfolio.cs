@@ -20,6 +20,8 @@ public sealed class Portfolio
     public int TotalTrades { get; private set; }
     public bool IsHalted { get; set; }
     public double TotalApiCost { get; private set; }
+    public double DailyApiCost { get; private set; }
+    public string DailyTrackingDate { get; private set; }
 
     // condition_id -> DateTimeOffset of close (in-memory cooldown, not persisted)
     private readonly Dictionary<string, DateTimeOffset> _recentlyClosed = new();
@@ -39,6 +41,11 @@ public sealed class Portfolio
             TotalRealizedPnl = snapshot.TotalRealizedPnl;
             TotalTrades = snapshot.TotalTrades;
             IsHalted = snapshot.IsHalted;
+            TotalApiCost = snapshot.TotalApiCost;
+            DailyApiCost = snapshot.DailyApiCost;
+            DailyTrackingDate = string.IsNullOrWhiteSpace(snapshot.DailyTrackingDate)
+                ? DateTimeOffset.UtcNow.Date.ToString("yyyy-MM-dd")
+                : snapshot.DailyTrackingDate;
         }
         else
         {
@@ -50,9 +57,10 @@ public sealed class Portfolio
             TotalRealizedPnl = 0;
             TotalTrades = 0;
             IsHalted = false;
+            TotalApiCost = 0;
+            DailyApiCost = 0;
+            DailyTrackingDate = DateTimeOffset.UtcNow.Date.ToString("yyyy-MM-dd");
         }
-
-        TotalApiCost = 0;
     }
 
     public PortfolioSnapshot Snapshot() => new()
@@ -65,6 +73,9 @@ public sealed class Portfolio
         TotalRealizedPnl = TotalRealizedPnl,
         TotalTrades = TotalTrades,
         IsHalted = IsHalted,
+        TotalApiCost = TotalApiCost,
+        DailyApiCost = DailyApiCost,
+        DailyTrackingDate = DailyTrackingDate,
     };
 
     public double TotalExposure() => Positions.Sum(p => p.SizeUsd);
@@ -483,6 +494,7 @@ public sealed class Portfolio
         var cost = (inputTokens * InputCostPerMTok / 1_000_000.0) +
                    (outputTokens * OutputCostPerMTok / 1_000_000.0);
         TotalApiCost += cost;
+        DailyApiCost += cost;
     }
 
     /// <summary>
@@ -503,9 +515,13 @@ public sealed class Portfolio
         return pnl;
     }
 
-    public void ResetDaily()
+    public void ResetDaily(string? trackingDate = null)
     {
         DailyStartValue = Bankroll;
+        DailyApiCost = 0;
+        DailyTrackingDate = string.IsNullOrWhiteSpace(trackingDate)
+            ? DateTimeOffset.UtcNow.Date.ToString("yyyy-MM-dd")
+            : trackingDate;
     }
 
     private static string Truncate(string s, int maxLen)

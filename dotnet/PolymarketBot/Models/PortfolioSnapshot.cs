@@ -11,4 +11,7 @@ public sealed class PortfolioSnapshot
     public int TotalTrades { get; init; }
     public bool IsHalted { get; init; }
     public double LastUpdated { get; init; } = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0;
+    public double TotalApiCost { get; init; }
+    public double DailyApiCost { get; init; }
+    public string DailyTrackingDate { get; init; } = "";
 }

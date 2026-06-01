@@ -2,6 +2,7 @@
 
 import logging
 import time
+from datetime import datetime, timezone
 from typing import Optional
 
 from config import BotConfig
@@ -26,6 +27,9 @@ class Portfolio:
             self.total_realized_pnl = snapshot.total_realized_pnl
             self.total_trades = snapshot.total_trades
             self.is_halted = snapshot.is_halted
+            self.total_api_cost = snapshot.total_api_cost
+            self.daily_api_cost = snapshot.daily_api_cost
+            self.daily_tracking_date = snapshot.daily_tracking_date or datetime.now(timezone.utc).date().isoformat()
         else:
             self.bankroll = config.initial_bankroll
             self.initial_bankroll = config.initial_bankroll
@@ -35,9 +39,11 @@ class Portfolio:
             self.total_realized_pnl = 0.0
             self.total_trades = 0
             self.is_halted = False
+            self.total_api_cost = 0.0
+            self.daily_api_cost = 0.0
+            self.daily_tracking_date = datetime.now(timezone.utc).date().isoformat()
 
         self._recently_closed: dict[str, float] = {}  # condition_id -> unix timestamp of close
-        self.total_api_cost = 0.0
 
     def snapshot(self) -> PortfolioSnapshot:
         return PortfolioSnapshot(
@@ -49,6 +55,9 @@ class Portfolio:
             total_realized_pnl=self.total_realized_pnl,
             total_trades=self.total_trades,
             is_halted=self.is_halted,
+            total_api_cost=self.total_api_cost,
+            daily_api_cost=self.daily_api_cost,
+            daily_tracking_date=self.daily_tracking_date,
         )
 
     def total_exposure(self) -> float:
@@ -405,6 +414,7 @@ class Portfolio:
         cost = (input_tokens * INPUT_COST_PER_MTOK / 1_000_000) + \
                (output_tokens * OUTPUT_COST_PER_MTOK / 1_000_000)
         self.total_api_cost += cost
+        self.daily_api_cost += cost
 
     def remove_ghost_position(self, condition_id: str) -> None:
         """Remove a phantom position that has no actual on-chain tokens.
@@ -423,6 +433,8 @@ class Portfolio:
             f"(${pos.size_usd:.2f} cost written off, PnL={pnl:+.2f})"
         )
 
-    def reset_daily(self) -> None:
+    def reset_daily(self, tracking_date: Optional[str] = None) -> None:
         """Reset daily tracking. Call at the start of each new trading day."""
         self.daily_start_value = self.bankroll
+        self.daily_api_cost = 0.0
+        self.daily_tracking_date = tracking_date or datetime.now(timezone.utc).date().isoformat()

@@ -296,7 +296,6 @@ Console.CancelKeyPress += (_, e) =>
     cts.Cancel();
 };
 
-var lastDailyReset = DateTimeOffset.UtcNow.Date;
 var cycle = 0;
 
 // ── Main loop ───────────────────────────────────────────────────
@@ -314,13 +313,12 @@ while (!cts.Token.IsCancellationRequested)
     }
 
     // Daily reset
-    var today = DateTimeOffset.UtcNow.Date;
-    if (today != lastDailyReset)
+    var today = DateTimeOffset.UtcNow.Date.ToString("yyyy-MM-dd");
+    if (today != portfolio.DailyTrackingDate)
     {
-        portfolio.ResetDaily();
-        lastDailyReset = today;
-        log.LogInformation("New day — daily start value reset to ${Bankroll:F2}", portfolio.Bankroll);
-        Con($"NEW DAY: daily PnL reset, start=${portfolio.Bankroll:F2}");
+        portfolio.ResetDaily(today);
+        log.LogInformation("New day — daily start value reset to ${Bankroll:F2}; daily API cost reset", portfolio.Bankroll);
+        Con($"NEW DAY: daily PnL/API reset, start=${portfolio.Bankroll:F2}");
         notifier.NotifyDailyReset(portfolio);
     }
 
@@ -709,12 +707,12 @@ while (!cts.Token.IsCancellationRequested)
                 Con($"  API BUDGET: cycle ${cycleApiCost:F4}/${cycleApiBudget:F4}, skipping remaining evaluations");
                 break;
             }
-            if (portfolio.TotalApiCost >= dailyApiBudget)
+            if (portfolio.DailyApiCost >= dailyApiBudget)
             {
                 log.LogInformation(
                     "  API daily budget reached (${Cost:F4} >= ${Budget:F4}) — skipping remaining evaluations",
-                    portfolio.TotalApiCost, dailyApiBudget);
-                Con($"  API BUDGET: daily ${portfolio.TotalApiCost:F4}/${dailyApiBudget:F4}, skipping remaining evaluations");
+                    portfolio.DailyApiCost, dailyApiBudget);
+                Con($"  API BUDGET: daily ${portfolio.DailyApiCost:F4}/${dailyApiBudget:F4}, skipping remaining evaluations");
                 break;
             }
 

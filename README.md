@@ -257,7 +257,7 @@ Azure also requires: `azure_openai_api_version` (default `2024-02-01`).
 | `max_estimate_tokens` | `1024` | Max output tokens per call |
 | `max_estimate_std` | `0.10` | Skip if ensemble std dev exceeds this |
 | `max_cycle_api_cost_usd` | `1.00` | Stop new evaluations once cycle API spend reaches this USD budget |
-| `max_daily_api_cost_usd` | `10.00` | Stop new evaluations once session/day API spend reaches this USD budget |
+| `max_daily_api_cost_usd` | `10.00` | Stop new evaluations once UTC-day API spend reaches this USD budget |
 
 ### Sizing
 
@@ -382,7 +382,7 @@ python analyze_trades.py --trades ../data/trades.jsonl
 ## Agent Survival
 
 - API spend is tracked and limited by independent USD budgets; it does not reduce trading bankroll
-- Estimation stops for the cycle/day when API spend reaches `max_cycle_api_cost_usd` or `max_daily_api_cost_usd`
+- Estimation stops for the cycle/UTC-day when API spend reaches `max_cycle_api_cost_usd` or `max_daily_api_cost_usd`; the daily API counter is persisted across restarts
 - Scan skipped when `bankroll < max(min_trade_usd, max_position_pct × bankroll)`
 - Agent halts when `bankroll + exposure < $1`
 - Stale `is_halted` flag auto-clears on restart if portfolio is healthy

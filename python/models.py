@@ -136,3 +136,6 @@ class PortfolioSnapshot:
     total_trades: int
     is_halted: bool
     last_updated: float = field(default_factory=time.time)
+    total_api_cost: float = 0.0
+    daily_api_cost: float = 0.0
+    daily_tracking_date: str = ""
