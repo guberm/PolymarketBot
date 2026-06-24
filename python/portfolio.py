@@ -150,6 +150,44 @@ class Portfolio:
 
     # ── Risk checks ───────────────────────────────────────────────────
 
+    def check_portfolio_risk(self) -> bool:
+        """Return True if portfolio-wide risk limits allow new market scans/trades."""
+        # Daily stop loss (include open position value — deployed capital isn't lost)
+        portfolio_value = self.bankroll + self.total_exposure()
+        daily_pnl = portfolio_value - self.daily_start_value
+        daily_stop_loss_pct = self.config.daily_stop_loss_pct
+        if self.config.live_trading and not self.config.allow_unsafe_risk:
+            daily_stop_loss_pct = min(daily_stop_loss_pct, 0.25)
+        if daily_pnl < 0 and abs(daily_pnl) > self.daily_start_value * daily_stop_loss_pct:
+            log.warning(f"HALT: Daily stop loss triggered (PnL=${daily_pnl:+.2f}, limit={daily_stop_loss_pct:.0%})")
+            self.is_halted = True
+            return False
+
+        # Max drawdown from high water mark
+        if self.high_water_mark > 0:
+            drawdown = (self.high_water_mark - portfolio_value) / self.high_water_mark
+            max_drawdown_pct = self.config.max_drawdown_pct
+            if self.config.live_trading and not self.config.allow_unsafe_risk:
+                max_drawdown_pct = min(max_drawdown_pct, 0.60)
+            if drawdown > max_drawdown_pct:
+                log.warning(
+                    f"HALT: Max drawdown {drawdown:.1%} exceeded "
+                    f"(limit={max_drawdown_pct:.0%}, configured={self.config.max_drawdown_pct:.0%}, "
+                    f"allow_unsafe_risk={self.config.allow_unsafe_risk})"
+                )
+                self.is_halted = True
+                return False
+
+        # Agent death — only when total portfolio value (free cash + open positions)
+        # drops below $1. Negative bankroll from API costs while holding positions
+        # is normal: positions will eventually resolve and return USDC.
+        if portfolio_value < 1.0:
+            log.warning("HALT: Portfolio value < $1 — agent is dead")
+            self.is_halted = True
+            return False
+
+        return True
+
     def check_risk(self, signal: Signal) -> bool:
         """Return True if the trade passes all risk limits."""
         if self.has_position(signal.market.condition_id):
@@ -187,37 +225,7 @@ class Portfolio:
             log.info(f"Risk BLOCK: '{signal.market.category}' exposure ${cat_exp:.2f} > limit ${cat_limit:.2f}")
             return False
 
-        # Daily stop loss (include open position value — deployed capital isn't lost)
-        portfolio_value = self.bankroll + self.total_exposure()
-        daily_pnl = portfolio_value - self.daily_start_value
-        daily_stop_loss_pct = self.config.daily_stop_loss_pct
-        if self.config.live_trading and not self.config.allow_unsafe_risk:
-            daily_stop_loss_pct = min(daily_stop_loss_pct, 0.25)
-        if daily_pnl < 0 and abs(daily_pnl) > self.daily_start_value * daily_stop_loss_pct:
-            log.warning(f"HALT: Daily stop loss triggered (PnL=${daily_pnl:+.2f}, limit={daily_stop_loss_pct:.0%})")
-            self.is_halted = True
-            return False
-
-        # Max drawdown from high water mark
-        if self.high_water_mark > 0:
-            drawdown = (self.high_water_mark - portfolio_value) / self.high_water_mark
-            max_drawdown_pct = self.config.max_drawdown_pct
-            if self.config.live_trading and not self.config.allow_unsafe_risk:
-                max_drawdown_pct = min(max_drawdown_pct, 0.60)
-            if drawdown > max_drawdown_pct:
-                log.warning(f"HALT: Max drawdown {drawdown:.1%} exceeded (limit={max_drawdown_pct:.0%})")
-                self.is_halted = True
-                return False
-
-        # Agent death — only when total portfolio value (free cash + open positions)
-        # drops below $1. Negative bankroll from API costs while holding positions
-        # is normal: positions will eventually resolve and return USDC.
-        if self.bankroll + self.total_exposure() < 1.0:
-            log.warning("HALT: Portfolio value < $1 — agent is dead")
-            self.is_halted = True
-            return False
-
-        return True
+        return self.check_portfolio_risk()
 
     # ── Position management ───────────────────────────────────────────
 
@@ -435,6 +443,6 @@ class Portfolio:
 
     def reset_daily(self, tracking_date: Optional[str] = None) -> None:
         """Reset daily tracking. Call at the start of each new trading day."""
-        self.daily_start_value = self.bankroll
+        self.daily_start_value = self.bankroll + self.total_exposure()
         self.daily_api_cost = 0.0
         self.daily_tracking_date = tracking_date or datetime.now(timezone.utc).date().isoformat()

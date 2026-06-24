@@ -28,6 +28,7 @@ static void EnableAnsiColors()
 
 var verbose = args.Contains("--verbose") || args.Contains("-v");
 var console_ = args.Contains("--console") || args.Contains("-c");
+var runOnce = args.Contains("--once");
 
 // ── Config ──────────────────────────────────────────────────────
 
@@ -97,8 +98,8 @@ var log = loggerFactory.CreateLogger("bot.main");
 var mode = config.LiveTrading ? "LIVE" : "PAPER";
 log.LogInformation(new string('=', 60));
 log.LogInformation("Polymarket Bot (.NET)");
-log.LogInformation("Mode: {Mode} | Bankroll: ${Bankroll:F2}", mode, config.InitialBankroll);
-log.LogInformation("Min edge: {MinEdge:P0} | Max position: {MaxPos:P0}", config.MinEdge, config.MaxPositionPct);
+log.LogInformation("Mode: {Mode} | Config bankroll: ${Bankroll:F2}", mode, config.InitialBankroll);
+log.LogInformation("Min edge: {MinEdge:P0} | Max position: {MaxPos:P0}", config.MinEdge, EffectiveMaxPositionPct(config));
 log.LogInformation("Scan interval: {Interval} min | Markets/cycle: {Markets}",
     config.ScanIntervalMinutes, config.MarketsPerCycle);
 var _modeLabel = config.MultiProvider ? "multi" : config.AiProvider;
@@ -165,7 +166,7 @@ if (console_)
 {
     Console.WriteLine($"\n{new string('=', 60)}");
     Console.WriteLine($"  POLYMARKET BOT (.NET) — {mode} MODE");
-    Console.WriteLine($"  Bankroll: ${config.InitialBankroll:F2} | Min edge: {config.MinEdge:P0}");
+    Console.WriteLine($"  Config bankroll: ${config.InitialBankroll:F2} | Min edge: {config.MinEdge:P0}");
     Console.WriteLine($"  Risk: {EffectiveMaxPositionPct(config):P0}/pos, {EffectiveMaxExposurePct(config):P0}/total, {EffectiveDailyStopLossPct(config):P0}/daily-SL");
     Console.WriteLine($"  Scan: every {config.ScanIntervalMinutes}min, {config.MarketsPerCycle} markets/cycle");
     Console.WriteLine($"{new string('=', 60)}\n");
@@ -267,8 +268,8 @@ if (config.LiveTrading)
     Con("CLOB API credentials initialized");
 
     // Ensure CTF conditional token approvals for exchange contracts (required for SELL orders)
-    await clobClient.EnsureConditionalTokenApprovalsAsync(cts.Token);
-    Con("CTF token approvals verified");
+    var approvalsChecked = await clobClient.EnsureConditionalTokenApprovalsAsync(cts.Token);
+    Con(approvalsChecked ? "CTF token approvals verified" : "CTF token approval check skipped");
     var liveTrader = new LiveTrader(clobClient, loggerFactory.CreateLogger<LiveTrader>());
     trader = liveTrader;
 
@@ -317,8 +318,9 @@ while (!cts.Token.IsCancellationRequested)
     if (today != portfolio.DailyTrackingDate)
     {
         portfolio.ResetDaily(today);
-        log.LogInformation("New day — daily start value reset to ${Bankroll:F2}; daily API cost reset", portfolio.Bankroll);
-        Con($"NEW DAY: daily PnL/API reset, start=${portfolio.Bankroll:F2}");
+        PersistenceService.SaveSnapshot(portfolio.Snapshot(), config.DataDir);
+        log.LogInformation("New day — daily start value reset to portfolio ${Value:F2}; daily API cost reset", portfolio.DailyStartValue);
+        Con($"NEW DAY: daily PnL/API reset, start=${portfolio.DailyStartValue:F2}");
         notifier.NotifyDailyReset(portfolio);
     }
 
@@ -347,7 +349,7 @@ while (!cts.Token.IsCancellationRequested)
         Console.WriteLine($"\n{new string('\u2500', 60)}");
         Console.WriteLine($"[{Ts()}] CYCLE {cycle}");
         Console.WriteLine($"  Portfolio: ${pv:F2} (bankroll=${portfolio.Bankroll:F2} + exposure=${portfolio.TotalExposure():F2})");
-        Console.WriteLine($"  Positions: {portfolio.Positions.Count} | API cost: ${portfolio.TotalApiCost:F4}");
+        Console.WriteLine($"  Positions: {portfolio.Positions.Count} | API today: ${portfolio.DailyApiCost:F4} | total: ${portfolio.TotalApiCost:F4}");
         Console.WriteLine(new string('\u2500', 60));
     }
 
@@ -635,6 +637,15 @@ while (!cts.Token.IsCancellationRequested)
         Con($"REVIEW: {exitsThisCycle} exits, bankroll=${portfolio.Bankroll:F2}, {portfolio.Positions.Count} positions remaining");
     }
 
+    if (!portfolio.CheckPortfolioRisk())
+    {
+        log.LogWarning("Portfolio risk limit reached — stopping before market scan");
+        Con($"{RED}HALTED: portfolio risk limit reached, stopping before scan{RESET}");
+        PersistenceService.SaveSnapshot(portfolio.Snapshot(), config.DataDir);
+        notifier.NotifyHalted("Portfolio risk limit reached", portfolio);
+        break;
+    }
+
     try
     {
         // Skip market scan entirely if bankroll can't fund the smallest possible
@@ -854,19 +865,26 @@ while (!cts.Token.IsCancellationRequested)
         // Cycle summary
         log.LogInformation(
             "Cycle {Cycle}: {Trades} trades | Bankroll: ${Bankroll:F2} | Positions: {Positions} | " +
-            "Exposure: ${Exposure:F2} | API cost: ${ApiCost:F4} | Realized PnL: ${PnL:+0.00;-0.00}",
+            "Exposure: ${Exposure:F2} | API today: ${DailyApiCost:F4} | API total: ${TotalApiCost:F4} | Realized PnL: ${PnL:+0.00;-0.00}",
             cycle, tradesThisCycle, portfolio.Bankroll, portfolio.Positions.Count,
-            portfolio.TotalExposure(), portfolio.TotalApiCost, portfolio.TotalRealizedPnl);
+            portfolio.TotalExposure(), portfolio.DailyApiCost, portfolio.TotalApiCost, portfolio.TotalRealizedPnl);
 
         if (console_)
         {
             var pvSummary = portfolio.Bankroll + portfolio.TotalExposure();
             Console.WriteLine($"\n[{Ts()}] SUMMARY: {tradesThisCycle} trades this cycle");
             Console.WriteLine($"  Portfolio: ${pvSummary:F2} | Bankroll: ${portfolio.Bankroll:F2} | Exposure: ${portfolio.TotalExposure():F2}");
-            Console.WriteLine($"  Positions: {portfolio.Positions.Count} | API cost: ${portfolio.TotalApiCost:F4} | PnL: ${portfolio.TotalRealizedPnl:+0.00;-0.00}");
+            Console.WriteLine($"  Positions: {portfolio.Positions.Count} | API today: ${portfolio.DailyApiCost:F4} | total: ${portfolio.TotalApiCost:F4} | PnL: ${portfolio.TotalRealizedPnl:+0.00;-0.00}");
         }
 
         PersistenceService.SaveSnapshot(portfolio.Snapshot(), config.DataDir);
+
+        if (runOnce)
+        {
+            log.LogInformation("Run-once complete — stopping after cycle {Cycle}", cycle);
+            Con("ONCE: completed one cycle, stopping");
+            break;
+        }
     }
     catch (OperationCanceledException) when (cts.Token.IsCancellationRequested)
     {

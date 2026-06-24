@@ -643,12 +643,12 @@ public sealed class ClobApiClient
     /// Checks isApprovedForAll first; only sends tx if not already approved.
     /// Requires ctf_address, exchange_address, and polygon_rpc_url in config.
     /// </summary>
-    public async Task EnsureConditionalTokenApprovalsAsync(CancellationToken ct)
+    public async Task<bool> EnsureConditionalTokenApprovalsAsync(CancellationToken ct)
     {
         if (string.IsNullOrEmpty(_ctfAddress) || string.IsNullOrEmpty(_polygonRpcUrl))
         {
             _log.LogWarning("CTF approval check skipped — ctf_address / polygon_rpc_url not configured");
-            return;
+            return false;
         }
 
         if (!string.IsNullOrEmpty(_exchangeAddress))
@@ -656,6 +656,8 @@ public sealed class ClobApiClient
 
         if (!string.IsNullOrEmpty(_negRiskExchangeAddress))
             await ApproveIfNeededAsync(_ctfAddress, _negRiskExchangeAddress, "NegRiskExchange", ct);
+
+        return true;
     }
 
     private async Task ApproveIfNeededAsync(

@@ -181,6 +181,52 @@ public sealed class Portfolio
 
     // -- Risk checks --
 
+    public bool CheckPortfolioRisk()
+    {
+        // Daily stop loss (include open position value — deployed capital isn't lost)
+        var portfolioValue = Bankroll + TotalExposure();
+        var dailyPnl = portfolioValue - DailyStartValue;
+        var dailyStopLossPct = _config.LiveTrading && !_config.AllowUnsafeRisk
+            ? Math.Min(_config.DailyStopLossPct, 0.25)
+            : _config.DailyStopLossPct;
+        if (dailyPnl < 0 && Math.Abs(dailyPnl) > DailyStartValue * dailyStopLossPct)
+        {
+            _log.LogWarning("HALT: Daily stop loss triggered (PnL=${Pnl:+0.00;-0.00}, limit={Limit:P0})",
+                dailyPnl, dailyStopLossPct);
+            IsHalted = true;
+            return false;
+        }
+
+        // Max drawdown from high water mark
+        if (HighWaterMark > 0)
+        {
+            var drawdown = (HighWaterMark - portfolioValue) / HighWaterMark;
+            var maxDrawdownPct = _config.LiveTrading && !_config.AllowUnsafeRisk
+                ? Math.Min(_config.MaxDrawdownPct, 0.60)
+                : _config.MaxDrawdownPct;
+            if (drawdown > maxDrawdownPct)
+            {
+                _log.LogWarning(
+                    "HALT: Max drawdown {Drawdown:P1} exceeded (limit={Limit:P0}, configured={Configured:P0}, allow_unsafe_risk={AllowUnsafe})",
+                    drawdown, maxDrawdownPct, _config.MaxDrawdownPct, _config.AllowUnsafeRisk);
+                IsHalted = true;
+                return false;
+            }
+        }
+
+        // Agent death — only when total portfolio value (free cash + open positions)
+        // drops below $1. Negative bankroll from API costs while holding positions
+        // is normal: positions will eventually resolve and return USDC.
+        if (portfolioValue < 1.0)
+        {
+            _log.LogWarning("HALT: Portfolio value < $1 — agent is dead");
+            IsHalted = true;
+            return false;
+        }
+
+        return true;
+    }
+
     public bool CheckRisk(Signal signal)
     {
         if (HasPosition(signal.Market.ConditionId))
@@ -233,47 +279,7 @@ public sealed class Portfolio
             return false;
         }
 
-        // Daily stop loss (include open position value — deployed capital isn't lost)
-        var portfolioValue = Bankroll + TotalExposure();
-        var dailyPnl = portfolioValue - DailyStartValue;
-        var dailyStopLossPct = _config.LiveTrading && !_config.AllowUnsafeRisk
-            ? Math.Min(_config.DailyStopLossPct, 0.25)
-            : _config.DailyStopLossPct;
-        if (dailyPnl < 0 && Math.Abs(dailyPnl) > DailyStartValue * dailyStopLossPct)
-        {
-            _log.LogWarning("HALT: Daily stop loss triggered (PnL=${Pnl:+0.00;-0.00}, limit={Limit:P0})",
-                dailyPnl, dailyStopLossPct);
-            IsHalted = true;
-            return false;
-        }
-
-        // Max drawdown from high water mark
-        if (HighWaterMark > 0)
-        {
-            var drawdown = (HighWaterMark - portfolioValue) / HighWaterMark;
-            var maxDrawdownPct = _config.LiveTrading && !_config.AllowUnsafeRisk
-                ? Math.Min(_config.MaxDrawdownPct, 0.60)
-                : _config.MaxDrawdownPct;
-            if (drawdown > maxDrawdownPct)
-            {
-                _log.LogWarning("HALT: Max drawdown {Drawdown:P1} exceeded (limit={Limit:P0})",
-                    drawdown, maxDrawdownPct);
-                IsHalted = true;
-                return false;
-            }
-        }
-
-        // Agent death — only when total portfolio value (free cash + open positions)
-        // drops below $1. Negative bankroll from API costs while holding positions
-        // is normal: positions will eventually resolve and return USDC.
-        if (Bankroll + TotalExposure() < 1.0)
-        {
-            _log.LogWarning("HALT: Portfolio value < $1 — agent is dead");
-            IsHalted = true;
-            return false;
-        }
-
-        return true;
+        return CheckPortfolioRisk();
     }
 
     // -- Position management --
@@ -517,7 +523,7 @@ public sealed class Portfolio
 
     public void ResetDaily(string? trackingDate = null)
     {
-        DailyStartValue = Bankroll;
+        DailyStartValue = Bankroll + TotalExposure();
         DailyApiCost = 0;
         DailyTrackingDate = string.IsNullOrWhiteSpace(trackingDate)
             ? DateTimeOffset.UtcNow.Date.ToString("yyyy-MM-dd")

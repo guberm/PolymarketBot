@@ -103,6 +103,9 @@ class MarketScanner:
                     log.warning(f"Rate limited on /events, retrying in {wait}s")
                     time.sleep(wait)
                     continue
+                if resp.status_code == 422 and offset > 0:
+                    log.debug(f"Reached end of /events pagination at offset {offset}")
+                    return []
                 resp.raise_for_status()
                 return resp.json()
             except requests.RequestException as e:

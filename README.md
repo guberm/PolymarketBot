@@ -84,7 +84,8 @@ run-bot.bat   ← double-click, reads polymarket_bot_config.json automatically
 **Dashboard (Windows):**
 
 ```text
-run-dashboard.bat   ← Electron desktop app, launch after npm install
+run-dashboard.vbs   ← Electron desktop app, hidden/no terminal window
+run-dashboard.bat   ← fallback launcher, may briefly show a terminal
 ```
 
 Or:

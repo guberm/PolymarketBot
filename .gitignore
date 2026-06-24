@@ -51,3 +51,5 @@ transcript.md
 # Launch scripts with credentials
 # *.bat
 # *.cmd
+
+.codegraph/

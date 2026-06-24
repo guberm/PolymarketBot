@@ -112,6 +112,12 @@ public sealed class MarketScanner
                     continue;
                 }
 
+                if ((int)resp.StatusCode == 422 && offset > 0)
+                {
+                    _log.LogDebug("Reached end of /events pagination at offset {Offset}", offset);
+                    return [];
+                }
+
                 resp.EnsureSuccessStatusCode();
                 var json = await resp.Content.ReadAsStringAsync(ct);
                 var doc = JsonDocument.Parse(json);

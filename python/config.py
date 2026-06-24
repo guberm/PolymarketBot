@@ -11,11 +11,31 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+_CONFIG_DIR: Path | None = None
+
+
+def _find_config_file() -> Path | None:
+    env_path = os.environ.get("CONFIG_FILE")
+    if env_path:
+        return Path(env_path).expanduser().resolve()
+
+    for start in (Path.cwd(), Path(__file__).resolve().parent.parent):
+        for base in (start, *start.parents):
+            candidate = base / "polymarket_bot_config.json"
+            if candidate.exists():
+                return candidate
+
+    return None
+
 
 def _load_json() -> dict:
     """Load config.json. Returns empty dict if not found."""
-    path = os.environ.get("CONFIG_FILE") or str(Path(__file__).parent.parent / "polymarket_bot_config.json")
+    global _CONFIG_DIR
+    path = _find_config_file()
+    if path is None:
+        return {}
     try:
+        _CONFIG_DIR = path.parent
         with open(path, encoding="utf-8") as f:
             return json.load(f)
     except FileNotFoundError:
@@ -24,6 +44,14 @@ def _load_json() -> dict:
         import logging
         logging.getLogger("bot.config").warning(f"Could not load config.json: {e}")
         return {}
+
+
+def _resolve_data_dir(data_dir: str, from_env: bool) -> str:
+    path = Path(data_dir).expanduser()
+    if path.is_absolute():
+        return str(path.resolve())
+    base = Path.cwd() if from_env else (_CONFIG_DIR or Path.cwd())
+    return str((base / path).resolve())
 
 
 @dataclass
@@ -137,12 +165,14 @@ class BotConfig:
     email_to: str = ""
 
     # Persistence
-    data_dir: str = "../data"
+    data_dir: str = "data"
 
     @classmethod
     def from_env(cls) -> "BotConfig":
         """Build config: env var > config.json > code default."""
         j = _load_json()
+        data_dir_env = os.environ.get("DATA_DIR")
+        data_dir_raw = data_dir_env if data_dir_env is not None else j.get("data_dir", "data")
 
         def get(key: str, default):
             env_val = os.environ.get(key.upper())
@@ -237,5 +267,5 @@ class BotConfig:
             email_user=get("email_user", ""),
             email_password=get("email_password", ""),
             email_to=get("email_to", ""),
-            data_dir=get("data_dir", "../data"),
+            data_dir=_resolve_data_dir(data_dir_raw, data_dir_env is not None),
         )

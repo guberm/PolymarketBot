@@ -8,10 +8,11 @@ namespace PolymarketBot;
 ///   1. Environment variables
 ///   2. polymarket_bot_config.json  (project root, or path in CONFIG_FILE env var)
 ///   3. Code defaults
-/// polymarket_bot_config.json location: polymarket_bot/polymarket_bot_config.json (../../polymarket_bot_config.json relative to dotnet/PolymarketBot/)
 /// </summary>
 public sealed class BotConfig
 {
+    private static string? _configDir;
+
     // Mode
     public bool LiveTrading { get; init; }
 
@@ -125,11 +126,15 @@ public sealed class BotConfig
     public string EmailTo { get; init; } = "";
 
     // Persistence (shared between Python and .NET)
-    public string DataDir { get; init; } = "../../data";
+    public string DataDir { get; init; } = "data";
 
     public static BotConfig FromEnv()
     {
         var j = LoadJsonConfig();
+        var dataDirEnv = Environment.GetEnvironmentVariable("DATA_DIR");
+        var dataDirRaw = !string.IsNullOrEmpty(dataDirEnv)
+            ? dataDirEnv
+            : j.TryGetValue("data_dir", out var jsonDataDir) ? jsonDataDir : "data";
 
         // Priority: env var > polymarket_bot_config.json > default
         string Cfg(string jsonKey, string envKey, string def)
@@ -225,25 +230,24 @@ public sealed class BotConfig
             EmailUser = Cfg("email_user", "EMAIL_USER", ""),
             EmailPassword = Cfg("email_password", "EMAIL_PASSWORD", ""),
             EmailTo = Cfg("email_to", "EMAIL_TO", ""),
-            DataDir = Cfg("data_dir", "DATA_DIR", "../../data"),
+            DataDir = ResolveDataDir(dataDirRaw, !string.IsNullOrEmpty(dataDirEnv)),
         };
     }
 
     /// <summary>
     /// Load polymarket_bot_config.json, returning all values as strings (matching env var behaviour).
-    /// Looks for CONFIG_FILE env var first, then ../../polymarket_bot_config.json relative to CWD.
+    /// Looks for CONFIG_FILE env var first, then walks upward from CWD/AppContext.BaseDirectory.
     /// </summary>
     private static Dictionary<string, string> LoadJsonConfig()
     {
-        var configFile = Environment.GetEnvironmentVariable("CONFIG_FILE");
-        if (string.IsNullOrEmpty(configFile))
-            configFile = Path.Combine(Directory.GetCurrentDirectory(), "..", "..", "polymarket_bot_config.json");
+        var configFile = FindConfigFile();
 
-        if (!File.Exists(configFile))
+        if (string.IsNullOrEmpty(configFile) || !File.Exists(configFile))
             return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
         try
         {
+            _configDir = Path.GetDirectoryName(configFile);
             var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             using var doc = JsonDocument.Parse(File.ReadAllText(configFile));
             foreach (var prop in doc.RootElement.EnumerateObject())
@@ -265,5 +269,35 @@ public sealed class BotConfig
         {
             return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         }
+    }
+
+    private static string? FindConfigFile()
+    {
+        var configFile = Environment.GetEnvironmentVariable("CONFIG_FILE");
+        if (!string.IsNullOrEmpty(configFile))
+            return Path.GetFullPath(configFile);
+
+        foreach (var start in new[] { Directory.GetCurrentDirectory(), AppContext.BaseDirectory })
+        {
+            var dir = new DirectoryInfo(start);
+            while (dir is not null)
+            {
+                var candidate = Path.Combine(dir.FullName, "polymarket_bot_config.json");
+                if (File.Exists(candidate))
+                    return candidate;
+                dir = dir.Parent;
+            }
+        }
+
+        return null;
+    }
+
+    private static string ResolveDataDir(string dataDir, bool fromEnv)
+    {
+        if (Path.IsPathRooted(dataDir))
+            return Path.GetFullPath(dataDir);
+
+        var baseDir = fromEnv ? Directory.GetCurrentDirectory() : (_configDir ?? Directory.GetCurrentDirectory());
+        return Path.GetFullPath(Path.Combine(baseDir, dataDir));
     }
 }

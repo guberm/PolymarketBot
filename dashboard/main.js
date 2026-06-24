@@ -275,7 +275,15 @@ function setupIPC() {
     } catch {}
 
     try {
-      botProcess = spawn(cmd, args, { cwd, shell: useShell, env: { ...process.env } })
+      botProcess = spawn(cmd, args, {
+        cwd,
+        shell: useShell,
+        env: {
+          ...process.env,
+          CONFIG_FILE: getConfigPath(),
+          DATA_DIR: dataDir,
+        },
+      })
 
       const fwd = (level) => (data) => {
         const msg = data.toString().trim()

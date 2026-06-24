@@ -3,6 +3,6 @@
   "bot-mode": "dotnet",
   "bot-verbose": true,
   "bot-console": true,
-  "panel-left-w": 1010,
+  "panel-left-w": 961,
   "panel-upper-h": 422
 }

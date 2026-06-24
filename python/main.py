@@ -111,6 +111,7 @@ def main():
     parser.add_argument("--daily-stop-loss-pct", type=float, help="Halt if daily loss exceeds this %% (e.g. 0.20)")
     parser.add_argument("--max-drawdown-pct", type=float, help="Halt if drawdown exceeds this %% (e.g. 0.50)")
     parser.add_argument("--max-concurrent-positions", type=int, help="Max open positions (e.g. 20)")
+    parser.add_argument("--once", action="store_true", help="Run exactly one cycle, then stop")
     args = parser.parse_args()
 
     config = BotConfig.from_env()
@@ -265,9 +266,10 @@ def main():
         today = datetime.now(timezone.utc).date().isoformat()
         if today != portfolio.daily_tracking_date:
             portfolio.reset_daily(today)
-            log.info(f"New day — daily start value reset to ${portfolio.bankroll:.2f}; daily API cost reset")
+            save_snapshot(portfolio.snapshot(), config.data_dir)
+            log.info(f"New day — daily start value reset to portfolio ${portfolio.daily_start_value:.2f}; daily API cost reset")
             if con:
-                print(f"[{ts()}] NEW DAY: daily PnL/API reset, start=${portfolio.bankroll:.2f}")
+                print(f"[{ts()}] NEW DAY: daily PnL/API reset, start=${portfolio.daily_start_value:.2f}")
             notifier.notify_daily_reset(portfolio)
 
         log.info(f"--- Cycle {cycle} ---")
@@ -291,7 +293,7 @@ def main():
             print(f"\n{'─'*60}")
             print(f"[{ts()}] CYCLE {cycle}")
             print(f"  Portfolio: ${pv:.2f} (bankroll=${portfolio.bankroll:.2f} + exposure=${portfolio.total_exposure():.2f})")
-            print(f"  Positions: {len(portfolio.positions)} | API cost: ${portfolio.total_api_cost:.4f}")
+            print(f"  Positions: {len(portfolio.positions)} | API today: ${portfolio.daily_api_cost:.4f} | total: ${portfolio.total_api_cost:.4f}")
             print(f"{'─'*60}")
 
         # ── Position review phase ─────────────────────────────────
@@ -529,6 +531,14 @@ def main():
                     f"{len(portfolio.positions)} positions remaining"
                 )
 
+        if not portfolio.check_portfolio_risk():
+            log.warning("Portfolio risk limit reached — stopping before market scan")
+            if con:
+                print(f"[{ts()}] {RED}HALTED: portfolio risk limit reached, stopping before scan{RESET}")
+            save_snapshot(portfolio.snapshot(), config.data_dir)
+            notifier.notify_halted("Portfolio risk limit reached", portfolio)
+            break
+
         try:
             # Skip scan entirely if bankroll can't fund the smallest possible trade.
             # Saves ~10s Gamma API call when no trade is possible.
@@ -722,7 +732,8 @@ def main():
                 f"Bankroll: ${portfolio.bankroll:.2f} | "
                 f"Positions: {len(portfolio.positions)} | "
                 f"Exposure: ${portfolio.total_exposure():.2f} | "
-                f"API cost: ${portfolio.total_api_cost:.4f} | "
+                f"API today: ${portfolio.daily_api_cost:.4f} | "
+                f"API total: ${portfolio.total_api_cost:.4f} | "
                 f"Realized PnL: ${portfolio.total_realized_pnl:+.2f}"
             )
 
@@ -730,9 +741,15 @@ def main():
                 pv = portfolio.bankroll + portfolio.total_exposure()
                 print(f"\n[{ts()}] SUMMARY: {trades_this_cycle} trades this cycle")
                 print(f"  Portfolio: ${pv:.2f} | Bankroll: ${portfolio.bankroll:.2f} | Exposure: ${portfolio.total_exposure():.2f}")
-                print(f"  Positions: {len(portfolio.positions)} | API cost: ${portfolio.total_api_cost:.4f} | PnL: ${portfolio.total_realized_pnl:+.2f}")
+                print(f"  Positions: {len(portfolio.positions)} | API today: ${portfolio.daily_api_cost:.4f} | total: ${portfolio.total_api_cost:.4f} | PnL: ${portfolio.total_realized_pnl:+.2f}")
 
             save_snapshot(portfolio.snapshot(), config.data_dir)
+
+            if args.once:
+                log.info(f"Run-once complete — stopping after cycle {cycle}")
+                if con:
+                    print(f"[{ts()}] ONCE: completed one cycle, stopping")
+                break
 
         except Exception as e:
             log.error(f"Cycle {cycle} error: {e}", exc_info=True)
