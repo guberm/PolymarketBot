@@ -3,6 +3,7 @@ using PolymarketBot;
 using PolymarketBot.Models;
 using PolymarketBot.Services;
 using System.Net;
+using System.Reflection;
 using System.Text.Json;
 
 static void Near(double expected, double actual, double tolerance = 1e-9)
@@ -17,6 +18,16 @@ if (!buy.Complete) throw new Exception("Expected complete BUY quote");
 Near(14.0, buy.FilledQuantity);
 Near(6.0 / 14.0, buy.Vwap);
 Near(0.50, buy.WorstPrice);
+
+var smtpPlanMethod = typeof(Notifier).GetMethod("ConnectionAttempts", BindingFlags.NonPublic | BindingFlags.Static)
+    ?? throw new Exception("SMTP fallback connection plan is missing");
+var smtpPlan = (Array)(smtpPlanMethod.Invoke(null, [587, true])
+    ?? throw new Exception("SMTP fallback connection plan returned null"));
+if (smtpPlan.Length != 2) throw new Exception("SMTP 587 plan should include one fallback");
+var smtpFallback = smtpPlan.GetValue(1)!;
+if ((int)smtpFallback.GetType().GetField("Item1")!.GetValue(smtpFallback)! != 465 ||
+    !(bool)smtpFallback.GetType().GetField("Item2")!.GetValue(smtpFallback)!)
+    throw new Exception("SMTP fallback should use port 465 with implicit TLS");
 
 var thin = ExecutionPricing.CalculateBuy([new BookLevel(0.40, 10)], 10.0);
 if (thin.Complete) throw new Exception("Expected insufficient BUY depth");

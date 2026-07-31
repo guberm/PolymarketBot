@@ -1,4 +1,5 @@
 import json
+import smtplib
 import tempfile
 import threading
 import time
@@ -12,6 +13,7 @@ from estimator import Estimator
 from execution import BookLevel, calculate_buy_quote, calculate_sell_quote
 from market_scanner import MarketScanner
 from models import Estimate, MarketInfo, Position, Side, Signal
+from notifier import Notifier
 from persistence import (
     get_resolution_candidates, load_snapshot, remove_resolution_watch, save_snapshot,
     track_resolution, track_resolutions, update_resolution_watchlist,
@@ -25,6 +27,42 @@ from trader import LiveTrader
 
 
 class ReliabilityTests(unittest.TestCase):
+    @patch("notifier.smtplib.SMTP_SSL")
+    @patch("notifier.smtplib.SMTP")
+    def test_email_uses_implicit_tls_fallback_after_starttls_timeout(self, primary, fallback):
+        config = BotConfig(
+            email_enabled=True, email_smtp_host="smtp.gmail.com", email_smtp_port=587,
+            email_use_tls=True, email_user="bot@example.com", email_password="secret",
+            email_to="owner@example.com",
+        )
+        starttls = primary.return_value
+        starttls.starttls.side_effect = TimeoutError("blocked")
+        secure = fallback.return_value
+
+        Notifier(config).send("test", "<b>test</b>")
+
+        fallback.assert_called_once_with(
+            "smtp.gmail.com", 465, timeout=5, context=unittest.mock.ANY,
+        )
+        secure.login.assert_called_once_with("bot@example.com", "secret")
+        secure.sendmail.assert_called_once()
+        starttls.close.assert_called_once()
+
+    @patch("notifier.smtplib.SMTP_SSL")
+    @patch("notifier.smtplib.SMTP")
+    def test_email_does_not_fallback_after_authentication_rejection(self, primary, fallback):
+        config = BotConfig(
+            email_enabled=True, email_smtp_host="smtp.gmail.com", email_smtp_port=587,
+            email_use_tls=True, email_user="bot@example.com", email_password="bad",
+            email_to="owner@example.com",
+        )
+        smtp = primary.return_value
+        smtp.login.side_effect = smtplib.SMTPAuthenticationError(535, b"bad credentials")
+
+        Notifier(config).send("test", "<b>test</b>")
+
+        fallback.assert_not_called()
+
     def test_shared_execution_golden_vectors(self):
         vectors = json.loads((Path(__file__).parent.parent / "tests" / "golden_execution.json").read_text())
         for vector in vectors:

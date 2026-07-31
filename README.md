@@ -342,7 +342,7 @@ Azure also requires: `azure_openai_api_version` (default `2024-02-01`).
 |-----|---------|-------------|
 | `email_enabled` | `false` | Send HTML emails |
 | `email_smtp_host` | — | e.g. `smtp.gmail.com` |
-| `email_smtp_port` | `587` | SMTP port |
+| `email_smtp_port` | `587` | SMTP port; blocked `587` automatically falls back to implicit TLS on `465` |
 | `email_use_tls` | `true` | STARTTLS; `false` = SSL on port 465 |
 | `email_user` | — | Sender address |
 | `email_password` | — | App password for Gmail |

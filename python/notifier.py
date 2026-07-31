@@ -157,10 +157,20 @@ class Notifier:
 
             context = ssl.create_default_context()
             if cfg.email_use_tls:
-                with smtplib.SMTP(cfg.email_smtp_host, cfg.email_smtp_port, timeout=5) as smtp:
+                smtp = None
+                try:
+                    smtp = smtplib.SMTP(cfg.email_smtp_host, cfg.email_smtp_port, timeout=5)
                     smtp.ehlo()
                     smtp.starttls(context=context)
                     smtp.ehlo()
+                except (OSError, smtplib.SMTPException) as primary_error:
+                    if cfg.email_smtp_port != 587:
+                        raise
+                    if smtp is not None:
+                        smtp.close()
+                    log.warning(f"SMTP 587 unavailable ({primary_error}); retrying with implicit TLS on 465")
+                    smtp = smtplib.SMTP_SSL(cfg.email_smtp_host, 465, timeout=5, context=context)
+                with smtp:
                     if cfg.email_user and cfg.email_password:
                         smtp.login(cfg.email_user, cfg.email_password)
                     smtp.sendmail(msg["From"], [cfg.email_to], msg.as_string())
