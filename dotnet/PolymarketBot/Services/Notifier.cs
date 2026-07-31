@@ -1,9 +1,10 @@
-using System.Net;
-using System.Net.Mail;
 using System.Text;
 using System.Text.RegularExpressions;
+using MailKit.Security;
 using Microsoft.Extensions.Logging;
+using MimeKit;
 using PolymarketBot.Models;
+using SmtpClient = MailKit.Net.Smtp.SmtpClient;
 
 namespace PolymarketBot.Services;
 
@@ -53,37 +54,48 @@ public sealed class Notifier
         if (!Enabled) return;
         try
         {
-#pragma warning disable SYSLIB0021
-            using var client = new SmtpClient(_config.EmailSmtpHost, _config.EmailSmtpPort)
-            {
-                EnableSsl = _config.EmailUseTls,
-                DeliveryMethod = SmtpDeliveryMethod.Network,
-                UseDefaultCredentials = false,
-                Timeout = 5000,
-            };
-#pragma warning restore SYSLIB0021
-            if (!string.IsNullOrEmpty(_config.EmailUser))
-                client.Credentials = new NetworkCredential(_config.EmailUser, _config.EmailPassword);
-
             var from = string.IsNullOrEmpty(_config.EmailUser)
                 ? $"polymarket-bot@{_config.EmailSmtpHost}"
                 : _config.EmailUser;
-
             var plainBody = HtmlToPlain(htmlBody);
-
-            using var msg = new MailMessage(from, _config.EmailTo)
+            var message = new MimeMessage
             {
                 Subject = $"[Polymarket Bot] {subject}",
-                Body = plainBody,
-                IsBodyHtml = false,
+                Body = new BodyBuilder { TextBody = plainBody, HtmlBody = htmlBody }.ToMessageBody(),
             };
+            message.From.Add(MailboxAddress.Parse(from));
+            message.To.Add(MailboxAddress.Parse(_config.EmailTo));
 
-            // Add HTML as alternate view
-            var htmlView = AlternateView.CreateAlternateViewFromString(htmlBody,
-                new System.Net.Mime.ContentType("text/html; charset=utf-8"));
-            msg.AlternateViews.Add(htmlView);
+            SmtpClient? connected = null;
+            Exception? lastConnectionError = null;
+            var attempts = ConnectionAttempts(_config.EmailSmtpPort, _config.EmailUseTls);
+            for (var i = 0; i < attempts.Length; i++)
+            {
+                var attempt = attempts[i];
+                var candidate = new SmtpClient { Timeout = 5000 };
+                try
+                {
+                    candidate.Connect(_config.EmailSmtpHost, attempt.Port,
+                        attempt.ImplicitTls ? SecureSocketOptions.SslOnConnect : SecureSocketOptions.StartTls);
+                    connected = candidate;
+                    if (i > 0)
+                        _logger.LogWarning("SMTP {PrimaryPort} unavailable ({Error}); using implicit TLS on {FallbackPort}",
+                            _config.EmailSmtpPort, lastConnectionError?.GetBaseException().Message, attempt.Port);
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    lastConnectionError = ex;
+                    candidate.Dispose();
+                }
+            }
+            if (connected is null) throw lastConnectionError ?? new IOException("SMTP connection failed");
 
-            client.Send(msg);
+            using var client = connected;
+            if (!string.IsNullOrEmpty(_config.EmailUser))
+                client.Authenticate(_config.EmailUser, _config.EmailPassword);
+            client.Send(message);
+            client.Disconnect(true);
             _logger.LogDebug("Email sent: {Subject}", subject);
         }
         catch (Exception ex)
@@ -91,6 +103,9 @@ public sealed class Notifier
             _logger.LogWarning("Email notification failed: {Error}", ex.GetBaseException().Message);
         }
     }
+
+    private static (int Port, bool ImplicitTls)[] ConnectionAttempts(int port, bool useTls) =>
+        useTls && port == 587 ? [(587, false), (465, true)] : [(port, !useTls)];
 
     // ── Convenience helpers ──────────────────────────────────────────────
 
