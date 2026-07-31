@@ -36,7 +36,7 @@ from persistence import (
     track_resolutions,
     update_resolution_watchlist,
 )
-from runtime_safety import InstanceLock
+from runtime_safety import InstanceLock, TradingBlockedError, check_geoblock
 
 log = logging.getLogger("bot.main")
 
@@ -160,7 +160,11 @@ def main():
     log.info(f"Scan interval: {config.scan_interval_minutes} min | Markets/cycle: {config.markets_per_cycle}")
     _mode_label = "multi" if config.multi_provider else config.ai_provider
     log.info(f"Ensemble: {config.ensemble_size}x [{_mode_label}]")
-    log.info(f"API budget: cycle=${config.max_cycle_api_cost_usd:.2f}, daily=${config.max_daily_api_cost_usd:.2f}")
+    log.info(
+        f"LLM cost tracking: {'on' if config.llm_cost_tracking_enabled else 'off'}"
+        + (f" | budgets: cycle=${config.max_cycle_api_cost_usd:.2f}, daily=${config.max_daily_api_cost_usd:.2f}"
+           if config.llm_cost_tracking_enabled else "")
+    )
     log.info(
         f"Risk caps: event={config.max_event_exposure_pct:.0%}, "
         f"category={config.max_category_exposure_pct:.0%}"
@@ -226,6 +230,20 @@ def main():
         # Persist initial state immediately so portfolio.json exists from the start
         save_snapshot(portfolio.snapshot(), config.data_dir)
 
+    if config.live_trading:
+        try:
+            geoblock = check_geoblock()
+        except Exception as exc:
+            log.critical(f"Cannot verify Polymarket geoblock status; refusing live trading: {exc}")
+            return 3
+        if geoblock.blocked:
+            log.critical(
+                f"Polymarket live trading is blocked in {geoblock.country or 'unknown'}/"
+                f"{geoblock.region or 'unknown'}; refusing to start"
+            )
+            return 3
+        log.info(f"Polymarket geoblock check passed ({geoblock.country}/{geoblock.region})")
+
     scanner = MarketScanner(config)
     estimator = Estimator(config)
     kalshi_shadow = KalshiShadow(config) if config.kalshi_shadow_enabled else None
@@ -284,6 +302,7 @@ def main():
     signal.signal(signal.SIGINT, handle_shutdown)
 
     cycle = 0
+    exit_code = 0
 
     while running:
         cycle += 1
@@ -467,7 +486,8 @@ def main():
                     review_market = build_review_market(es.position)
                     log.info(f"  STOP-LOSS CHECK: re-estimating {es.position.question[:50]}... before selling")
                     stop_estimate = estimator.estimate(review_market)
-                    portfolio.record_api_cost_usd(estimator.last_api_cost_usd)
+                    if config.llm_cost_tracking_enabled:
+                        portfolio.record_api_cost_usd(estimator.last_api_cost_usd)
                     if stop_estimate is not None:
                         es.position.fair_estimate_at_entry = stop_estimate.fair_probability
                         fair_for_side = (
@@ -690,31 +710,32 @@ def main():
                 if at_capacity:
                     continue
 
-                cycle_api_cost = portfolio.total_api_cost - cycle_api_cost_start
-                cycle_api_budget = config.max_cycle_api_cost_usd
-                daily_api_budget = config.max_daily_api_cost_usd
-                if cycle_api_cost >= cycle_api_budget:
-                    log.info(
-                        f"  API cycle budget reached (${cycle_api_cost:.4f} >= ${cycle_api_budget:.4f}) "
-                        f"— skipping remaining evaluations"
-                    )
-                    if con:
-                        print(
-                            f"[{ts()}]   API BUDGET: cycle ${cycle_api_cost:.4f}/${cycle_api_budget:.4f}, "
-                            f"skipping remaining evaluations"
+                if config.llm_cost_tracking_enabled:
+                    cycle_api_cost = portfolio.total_api_cost - cycle_api_cost_start
+                    cycle_api_budget = config.max_cycle_api_cost_usd
+                    daily_api_budget = config.max_daily_api_cost_usd
+                    if cycle_api_cost >= cycle_api_budget:
+                        log.info(
+                            f"  API cycle budget reached (${cycle_api_cost:.4f} >= ${cycle_api_budget:.4f}) "
+                            f"— skipping remaining evaluations"
                         )
-                    break
-                if portfolio.daily_api_cost >= daily_api_budget:
-                    log.info(
-                        f"  API daily budget reached (${portfolio.daily_api_cost:.4f} >= ${daily_api_budget:.4f}) "
-                        f"— skipping remaining evaluations"
-                    )
-                    if con:
-                        print(
-                            f"[{ts()}]   API BUDGET: daily ${portfolio.daily_api_cost:.4f}/${daily_api_budget:.4f}, "
-                            f"skipping remaining evaluations"
+                        if con:
+                            print(
+                                f"[{ts()}]   API BUDGET: cycle ${cycle_api_cost:.4f}/${cycle_api_budget:.4f}, "
+                                f"skipping remaining evaluations"
+                            )
+                        break
+                    if portfolio.daily_api_cost >= daily_api_budget:
+                        log.info(
+                            f"  API daily budget reached (${portfolio.daily_api_cost:.4f} >= ${daily_api_budget:.4f}) "
+                            f"— skipping remaining evaluations"
                         )
-                    break
+                        if con:
+                            print(
+                                f"[{ts()}]   API BUDGET: daily ${portfolio.daily_api_cost:.4f}/${daily_api_budget:.4f}, "
+                                f"skipping remaining evaluations"
+                            )
+                        break
 
                 # Skip estimation if we can't afford the CLOB minimum for either side.
                 # Conservative pre-book affordability check; the fresh book is checked after AI.
@@ -737,7 +758,8 @@ def main():
                 if con:
                     print(f"[{ts()}]   [{i:>2}/{len(eligible)}] EVAL: {market.question[:55]}...")
                 estimate = estimator.estimate(market)
-                portfolio.record_api_cost_usd(estimator.last_api_cost_usd)
+                if config.llm_cost_tracking_enabled:
+                    portfolio.record_api_cost_usd(estimator.last_api_cost_usd)
                 if estimate is None:
                     log.info(f"  [{i}/{len(eligible)}] SKIP (estimation failed)")
                     if con:
@@ -749,7 +771,8 @@ def main():
                 kalshi_reference = None
                 if kalshi_shadow:
                     kalshi_reference, verify_cost = kalshi_shadow.find_reference(market, estimator)
-                    portfolio.record_api_cost_usd(verify_cost)
+                    if config.llm_cost_tracking_enabled:
+                        portfolio.record_api_cost_usd(verify_cost)
 
                 # Only halt if total portfolio value is truly depleted
                 if portfolio.equity() < 1.0:
@@ -930,6 +953,14 @@ def main():
                     print(f"[{ts()}] ONCE: completed one cycle, stopping")
                 break
 
+        except TradingBlockedError as e:
+            exit_code = 3
+            running = False
+            log.critical(f"Emergency stop after definitive CLOB 403: {e}")
+            if con:
+                print(f"\n[{ts()}] {RED}EMERGENCY STOP: {e}{RESET}")
+            notifier.notify_error(cycle, e)
+            break
         except Exception as e:
             log.error(f"Cycle {cycle} error: {e}", exc_info=True)
             if con:
@@ -964,6 +995,7 @@ def main():
         print(f"  Realized PnL: ${portfolio.total_realized_pnl:+.2f}")
         print(f"{'='*60}")
     instance_lock.release()
+    return exit_code
 
 
 if __name__ == "__main__":

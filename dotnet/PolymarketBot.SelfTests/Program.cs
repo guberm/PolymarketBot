@@ -168,6 +168,29 @@ journal.Complete(intentId);
 if (journal.Pending().Count != 0) throw new Exception("Pending order completion failed");
 Directory.Delete(journalDir, true);
 
+using (var geoblockHttp = new HttpClient(new StaticResponseHandler(
+    """{"blocked":true,"country":"US","region":"NY"}""")))
+{
+    var geoblock = await TradingSafety.CheckGeoblockAsync(geoblockHttp);
+    if (!geoblock.Blocked || geoblock.Country != "US") throw new Exception("Geoblock startup check failed");
+}
+var rejectedJournalDir = Path.Combine(Path.GetTempPath(), $"polymarket-rejected-{Guid.NewGuid()}");
+var rejectedJournal = new OrderJournal(rejectedJournalDir);
+var rejectedIntent = rejectedJournal.Begin(new PendingOrderRecord { Kind = "BUY", ConditionId = "c", Side = "YES" });
+try
+{
+    TradingSafety.HandleDefinitiveRejection(rejectedJournal, rejectedIntent,
+        new ClobOrderRejectedException(System.Net.HttpStatusCode.Forbidden, "Trading restricted in your region"));
+    throw new Exception("Forbidden order rejection should stop trading");
+}
+catch (TradingBlockedException) { }
+if (rejectedJournal.Pending().Count != 0) throw new Exception("Rejected order intent was not removed");
+var badRequestIntent = rejectedJournal.Begin(new PendingOrderRecord { Kind = "BUY", ConditionId = "c", Side = "YES" });
+TradingSafety.HandleDefinitiveRejection(rejectedJournal, badRequestIntent,
+    new ClobOrderRejectedException(System.Net.HttpStatusCode.BadRequest, "invalid order"));
+if (rejectedJournal.Pending().Count != 0) throw new Exception("Definitive 400 intent was not removed");
+Directory.Delete(rejectedJournalDir, true);
+
 var invalidJsonConfig = new BotConfig
 {
     AiProvider = "openai",
@@ -182,6 +205,15 @@ var invalidJsonEstimator = new Estimator(invalidJsonConfig, invalidJsonHttp,
 if (await invalidJsonEstimator.EstimateAsync(watchMarket) is not null)
     throw new Exception("Invalid model JSON should not produce an estimate");
 Near(2, invalidJsonEstimator.LastApiCostUsd);
+var untrackedEstimator = new Estimator(new BotConfig
+{
+    AiProvider = "openai", OpenAiApiKey = "test", EnsembleSize = 1,
+    ApiPricing = "openai=1/2", LlmCostTrackingEnabled = false,
+}, new HttpClient(new StaticResponseHandler(
+    """{"choices":[{"message":{"content":"not json"}}],"usage":{"prompt_tokens":1000000,"completion_tokens":500000}}""")),
+    loggerFactory.CreateLogger<Estimator>());
+if (await untrackedEstimator.EstimateAsync(watchMarket) is not null || untrackedEstimator.LastApiCostUsd != 0)
+    throw new Exception("Disabled LLM cost tracking still recorded spend");
 
 var concurrentHandler = new ConcurrentResponseHandler();
 using var concurrentHttp = new HttpClient(concurrentHandler);

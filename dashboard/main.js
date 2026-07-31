@@ -4,7 +4,7 @@ const path = require('path')
 const fs = require('fs')
 const { spawn } = require('child_process')
 const { readLastLines } = require('./tail-lines')
-const { buildHistoryPoint } = require('./dashboard-model')
+const { buildHistoryPoint, parseProcessLogChunk } = require('./dashboard-model')
 
 // ── State ─────────────────────────────────────────────────────────────────
 let mainWindow = null
@@ -321,14 +321,24 @@ function setupIPC() {
         },
       })
 
-      const fwd = (level) => (data) => {
-        const msg = data.toString().trim()
-        if (msg && mainWindow) mainWindow.webContents.send('bot-output', { level, message: msg, timestamp: new Date().toISOString() })
+      const fwd = (level) => {
+        let buffer = ''
+        const forward = (data) => {
+          const parsed = parseProcessLogChunk(buffer, data, level)
+          buffer = parsed.remaining
+          if (mainWindow) parsed.entries.forEach(entry => mainWindow.webContents.send('bot-output', entry))
+        }
+        forward.flush = () => { if (buffer) forward('\n') }
+        return forward
       }
-      botProcess.stdout?.on('data', fwd('INFO'))
-      botProcess.stderr?.on('data', fwd('WARNING'))
+      const stdoutForwarder = fwd('INFO')
+      const stderrForwarder = fwd('WARNING')
+      botProcess.stdout?.on('data', stdoutForwarder)
+      botProcess.stderr?.on('data', stderrForwarder)
 
       botProcess.on('close', code => {
+        stdoutForwarder.flush()
+        stderrForwarder.flush()
         botProcess = null
         if (mainWindow) mainWindow.webContents.send('bot-stopped', { code })
       })

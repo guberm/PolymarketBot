@@ -1,6 +1,6 @@
 'use strict'
 const assert = require('assert')
-const { buildAttention, buildProviderHealth, buildHistoryPoint } = require('./dashboard-model')
+const { buildAttention, buildProviderHealth, buildHistoryPoint, buildHistorySeries, clampPaneSize, parseProcessLogChunk, dedupeLogs } = require('./dashboard-model')
 
 const now = Date.parse('2026-07-31T20:00:00Z')
 const portfolio = {
@@ -20,6 +20,8 @@ assert(attention.some(x => x.code === 'halted' && x.severity === 'critical'))
 assert(attention.some(x => x.code === 'pending_order'))
 assert(attention.some(x => x.code === 'quote_health'))
 assert(attention.some(x => x.code === 'api_budget'))
+assert(!buildAttention({ portfolio, config: { llm_cost_tracking_enabled: false, max_daily_api_cost_usd: 10 }, now })
+  .some(x => x.code === 'api_budget'))
 
 const estimates = [
   { record_type: 'evaluation', timestamp: 10, condition_id: 'a', provider_estimates: { openai: .8, gemini: .6 } },
@@ -41,4 +43,30 @@ assert.deepStrictEqual(buildHistoryPoint(portfolio), {
   timestamp: now / 1000, equity: 8, bankroll: 8, liquidation: 0,
   drawdown: .6, daily_api_cost: 9, total_api_cost: 12,
 })
+
+const history = [
+  { equity: 13.8, drawdown: .31, daily_api_cost: .12 },
+  { equity: 14.1, drawdown: .28, daily_api_cost: .24 },
+]
+assert.deepStrictEqual(buildHistorySeries(history, 'equity').values, [13.8, 14.1])
+assert.deepStrictEqual(buildHistorySeries(history, 'drawdown').values, [31, 28])
+assert.deepStrictEqual(buildHistorySeries(history, 'api').values, [.12, .24])
+assert.strictEqual(buildHistorySeries(history, 'unknown').mode, 'equity')
+assert.strictEqual(clampPaneSize(50, 100, 300), 100)
+assert.strictEqual(clampPaneSize(400, 100, 300), 300)
+assert.strictEqual(clampPaneSize(180, 100, 300), 180)
+assert.strictEqual(clampPaneSize('bad', 100, 300), 100)
+
+const chunk = parseProcessLogChunk('', '{"timestamp":"2026-07-31T20:00:00Z","level":"ERROR","message":"blocked"}\npartial', 'INFO', 'fallback')
+assert.deepStrictEqual(chunk.entries, [{ timestamp: '2026-07-31T20:00:00Z', level: 'ERROR', message: 'blocked' }])
+assert.strictEqual(chunk.remaining, 'partial')
+assert.strictEqual(dedupeLogs([chunk.entries[0], { ...chunk.entries[0] }]).length, 1)
+const fallback = new Date('2026-07-31T20:00:00Z')
+const localTime = [fallback.getHours(), fallback.getMinutes(), fallback.getSeconds()].map(value => String(value).padStart(2, '0')).join(':')
+const consoleChunk = parseProcessLogChunk('', `[${localTime}] info: bot.main[0] Cycle 1 complete\n`, 'INFO', fallback.toISOString())
+assert.deepStrictEqual(consoleChunk.entries, [{ timestamp: '2026-07-31T20:00:00.000Z', level: 'INFORMATION', message: 'Cycle 1 complete' }])
+assert.strictEqual(dedupeLogs([
+  consoleChunk.entries[0],
+  { timestamp: '2026-07-31T20:00:01Z', level: 'INFORMATION', message: 'Cycle 1 complete' },
+]).length, 1)
 console.log('dashboard model self-checks passed')

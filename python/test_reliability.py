@@ -17,7 +17,11 @@ from persistence import (
     track_resolution, track_resolutions, update_resolution_watchlist,
 )
 from portfolio import Portfolio
-from runtime_safety import InstanceLock, OrderJournal, parse_order_fill, retry_delay_seconds
+from runtime_safety import (
+    InstanceLock, OrderJournal, TradingBlockedError, check_geoblock,
+    parse_order_fill, retry_delay_seconds,
+)
+from trader import LiveTrader
 
 
 class ReliabilityTests(unittest.TestCase):
@@ -91,6 +95,12 @@ class ReliabilityTests(unittest.TestCase):
             estimator = Estimator(config)
             self.assertIsNone(estimator.estimate(market))
         self.assertAlmostEqual(estimator.last_api_cost_usd, 2.0)
+
+        config.llm_cost_tracking_enabled = False
+        with patch("estimator.requests.post", return_value=response):
+            untracked = Estimator(config)
+            self.assertIsNone(untracked.estimate(market))
+        self.assertEqual(untracked.last_api_cost_usd, 0)
 
     def test_multi_provider_calls_overlap(self):
         config = BotConfig(
@@ -217,6 +227,28 @@ class ReliabilityTests(unittest.TestCase):
 
             journal.complete(intent_id)
             self.assertEqual(OrderJournal(directory).pending(), [])
+
+    def test_geoblock_and_definitive_403_fail_closed(self):
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {"blocked": True, "country": "US", "region": "NY"}
+        status = check_geoblock(lambda *_args, **_kwargs: response)
+        self.assertTrue(status.blocked)
+        self.assertEqual(status.country, "US")
+
+        with tempfile.TemporaryDirectory() as directory:
+            trader = LiveTrader.__new__(LiveTrader)
+            trader.journal = OrderJournal(directory)
+            intent_id = trader.journal.begin({"kind": "BUY", "condition_id": "c", "side": "YES"})
+            rejection = RuntimeError("forbidden")
+            rejection.status_code = 403
+            with self.assertRaises(TradingBlockedError):
+                trader._handle_order_post_failure(intent_id, rejection, "BUY")
+            self.assertEqual(trader.journal.pending(), [])
+
+            uncertain_id = trader.journal.begin({"kind": "BUY", "condition_id": "c", "side": "YES"})
+            trader._handle_order_post_failure(uncertain_id, RuntimeError("connection reset"), "BUY")
+            self.assertEqual(trader.journal.pending()[0]["intent_id"], uncertain_id)
 
 
 if __name__ == "__main__":

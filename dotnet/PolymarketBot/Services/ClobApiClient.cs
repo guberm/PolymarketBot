@@ -279,7 +279,7 @@ public sealed class ClobApiClient
         if (!resp.IsSuccessStatusCode)
         {
             _log.LogError("CLOB order failed: {Status} {Body}", resp.StatusCode, respText);
-            return null;
+            throw new ClobOrderRejectedException(resp.StatusCode, respText[..Math.Min(respText.Length, 500)]);
         }
 
         _log.LogInformation("CLOB order response: {Resp}", respText[..Math.Min(respText.Length, 200)]);
@@ -438,7 +438,7 @@ public sealed class ClobApiClient
         if (!resp.IsSuccessStatusCode)
         {
             _log.LogError("CLOB SELL order failed: {Status} {Body}", resp.StatusCode, respText);
-            return null;
+            throw new ClobOrderRejectedException(resp.StatusCode, respText[..Math.Min(respText.Length, 500)]);
         }
 
         _log.LogInformation("CLOB SELL order response: {Resp}", respText[..Math.Min(respText.Length, 200)]);

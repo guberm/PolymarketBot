@@ -11,6 +11,33 @@ from pathlib import Path
 from uuid import uuid4
 
 
+GEOBLOCK_URL = "https://polymarket.com/api/geoblock"
+
+
+@dataclass(frozen=True)
+class GeoblockStatus:
+    blocked: bool
+    country: str = ""
+    region: str = ""
+
+
+class TradingBlockedError(RuntimeError):
+    """Fatal live-trading rejection; the process must not retry."""
+
+
+def check_geoblock(request_get=None, url: str = GEOBLOCK_URL) -> GeoblockStatus:
+    """Fail closed unless Polymarket explicitly reports that this region is allowed."""
+    if request_get is None:
+        import requests
+        request_get = requests.get
+    response = request_get(url, timeout=10)
+    response.raise_for_status()
+    data = response.json()
+    if not isinstance(data, dict) or not isinstance(data.get("blocked"), bool):
+        raise ValueError("Invalid Polymarket geoblock response")
+    return GeoblockStatus(data["blocked"], str(data.get("country", "")), str(data.get("region", "")))
+
+
 @dataclass(frozen=True)
 class OrderFill:
     status: str

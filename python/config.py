@@ -116,6 +116,7 @@ class BotConfig:
     ensemble_temperature: float = 0.7
     max_estimate_tokens: int = 1024
     max_estimate_std: float = 0.10
+    llm_cost_tracking_enabled: bool = True
     max_cycle_api_cost_usd: float = 1.00
     max_daily_api_cost_usd: float = 10.00
     api_pricing: str = "anthropic=3/15,openai=5/15,gemini=0.10/0.40,openrouter=3/15,azure_openai=5/15"
@@ -250,6 +251,7 @@ class BotConfig:
             ensemble_temperature=get("ensemble_temperature", 0.7),
             max_estimate_tokens=get("max_estimate_tokens", 1024),
             max_estimate_std=get("max_estimate_std", 0.10),
+            llm_cost_tracking_enabled=get("llm_cost_tracking_enabled", True),
             max_cycle_api_cost_usd=get("max_cycle_api_cost_usd", 1.00),
             max_daily_api_cost_usd=get("max_daily_api_cost_usd", 10.00),
             api_pricing=get("api_pricing", "anthropic=3/15,openai=5/15,gemini=0.10/0.40,openrouter=3/15,azure_openai=5/15"),

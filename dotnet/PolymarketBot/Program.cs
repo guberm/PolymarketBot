@@ -132,8 +132,11 @@ log.LogInformation(new string('=', 60));
     log.LogInformation("  Provider:       {P}",  provStr);
     log.LogInformation("  Ensemble:       {N}x  temp={T}  max_std={S:P0}",
         config.EnsembleSize, config.EnsembleTemperature, config.MaxEstimateStd);
-    log.LogInformation("  API budget:     cycle=${Cycle:F2}  daily=${Daily:F2}",
-        config.MaxCycleApiCostUsd, config.MaxDailyApiCostUsd);
+    if (config.LlmCostTrackingEnabled)
+        log.LogInformation("  LLM costs:      on  cycle_budget=${Cycle:F2}  daily_budget=${Daily:F2}",
+            config.MaxCycleApiCostUsd, config.MaxDailyApiCostUsd);
+    else
+        log.LogInformation("  LLM costs:      off (budgets disabled)");
     log.LogInformation("  Min edge:       {E:P0}",  config.MinEdge);
     log.LogInformation("── RISK ─────────────────────────────────────────────────────");
     var effectiveKelly = EffectiveKellyFraction(config);
@@ -231,6 +234,30 @@ else
 
 using var httpClient = new HttpClient();
 httpClient.DefaultRequestHeaders.Add("Accept", "application/json");
+using var cts = new CancellationTokenSource();
+
+if (config.LiveTrading)
+{
+    GeoblockStatus geoblock;
+    try
+    {
+        geoblock = await TradingSafety.CheckGeoblockAsync(httpClient, cts.Token);
+    }
+    catch (Exception ex)
+    {
+        log.LogCritical(ex, "Cannot verify Polymarket geoblock status; refusing live trading");
+        return 3;
+    }
+    if (geoblock.Blocked)
+    {
+        log.LogCritical("Polymarket live trading is blocked in {Country}/{Region}; refusing to start",
+            string.IsNullOrEmpty(geoblock.Country) ? "unknown" : geoblock.Country,
+            string.IsNullOrEmpty(geoblock.Region) ? "unknown" : geoblock.Region);
+        return 3;
+    }
+    log.LogInformation("Polymarket geoblock check passed ({Country}/{Region})",
+        geoblock.Country, geoblock.Region);
+}
 
 var scanner = new MarketScanner(config, httpClient, loggerFactory.CreateLogger<MarketScanner>());
 var estimator = new Estimator(config, httpClient, loggerFactory.CreateLogger<Estimator>());
@@ -267,8 +294,6 @@ else
     log.LogInformation("{Provider} API key validated.", config.AiProvider);
 
 // ── Graceful shutdown ───────────────────────────────────────────
-
-using var cts = new CancellationTokenSource();
 
 ITrader trader;
 ClobApiClient? clobClient = null;
@@ -320,6 +345,7 @@ Console.CancelKeyPress += (_, e) =>
 };
 
 var cycle = 0;
+var fatalExitCode = 0;
 
 // ── Main loop ───────────────────────────────────────────────────
 
@@ -544,7 +570,8 @@ while (!cts.Token.IsCancellationRequested)
                 log.LogInformation("  STOP-LOSS CHECK: re-estimating {Question} before selling",
                     Truncate(es.Position.Question, 50));
                 var stopEstimate = await estimator.EstimateAsync(reviewMarket, cts.Token);
-                portfolio.RecordApiCostUsd(estimator.LastApiCostUsd);
+                if (config.LlmCostTrackingEnabled)
+                    portfolio.RecordApiCostUsd(estimator.LastApiCostUsd);
                 if (stopEstimate is not null)
                 {
                     es.Position.FairEstimateAtEntry = stopEstimate.FairProbability;
@@ -785,24 +812,27 @@ while (!cts.Token.IsCancellationRequested)
             if (atCapacity)
                 continue;
 
-            var cycleApiCost = portfolio.TotalApiCost - cycleApiCostStart;
-            var cycleApiBudget = config.MaxCycleApiCostUsd;
-            var dailyApiBudget = config.MaxDailyApiCostUsd;
-            if (cycleApiCost >= cycleApiBudget)
+            if (config.LlmCostTrackingEnabled)
             {
-                log.LogInformation(
-                    "  API cycle budget reached (${Cost:F4} >= ${Budget:F4}) — skipping remaining evaluations",
-                    cycleApiCost, cycleApiBudget);
-                Con($"  API BUDGET: cycle ${cycleApiCost:F4}/${cycleApiBudget:F4}, skipping remaining evaluations");
-                break;
-            }
-            if (portfolio.DailyApiCost >= dailyApiBudget)
-            {
-                log.LogInformation(
-                    "  API daily budget reached (${Cost:F4} >= ${Budget:F4}) — skipping remaining evaluations",
-                    portfolio.DailyApiCost, dailyApiBudget);
-                Con($"  API BUDGET: daily ${portfolio.DailyApiCost:F4}/${dailyApiBudget:F4}, skipping remaining evaluations");
-                break;
+                var cycleApiCost = portfolio.TotalApiCost - cycleApiCostStart;
+                var cycleApiBudget = config.MaxCycleApiCostUsd;
+                var dailyApiBudget = config.MaxDailyApiCostUsd;
+                if (cycleApiCost >= cycleApiBudget)
+                {
+                    log.LogInformation(
+                        "  API cycle budget reached (${Cost:F4} >= ${Budget:F4}) — skipping remaining evaluations",
+                        cycleApiCost, cycleApiBudget);
+                    Con($"  API BUDGET: cycle ${cycleApiCost:F4}/${cycleApiBudget:F4}, skipping remaining evaluations");
+                    break;
+                }
+                if (portfolio.DailyApiCost >= dailyApiBudget)
+                {
+                    log.LogInformation(
+                        "  API daily budget reached (${Cost:F4} >= ${Budget:F4}) — skipping remaining evaluations",
+                        portfolio.DailyApiCost, dailyApiBudget);
+                    Con($"  API BUDGET: daily ${portfolio.DailyApiCost:F4}/${dailyApiBudget:F4}, skipping remaining evaluations");
+                    break;
+                }
             }
 
             // Skip estimation if we can't afford the CLOB minimum for either side.
@@ -822,7 +852,8 @@ while (!cts.Token.IsCancellationRequested)
             log.LogInformation("  {Idx} Evaluating: {Question}...", idx, Truncate(market.Question, 60));
             Con($"  {idx} EVAL: {Truncate(market.Question, 55)}...");
             var estimate = await estimator.EstimateAsync(market, cts.Token);
-            portfolio.RecordApiCostUsd(estimator.LastApiCostUsd);
+            if (config.LlmCostTrackingEnabled)
+                portfolio.RecordApiCostUsd(estimator.LastApiCostUsd);
             if (estimate is null)
             {
                 log.LogInformation("  {Idx} SKIP (estimation failed)", idx);
@@ -837,7 +868,8 @@ while (!cts.Token.IsCancellationRequested)
             {
                 var lookup = await kalshiShadow.FindReferenceAsync(market, estimator, cts.Token);
                 kalshiReference = lookup.Reference;
-                portfolio.RecordApiCostUsd(lookup.ApiCostUsd);
+                if (config.LlmCostTrackingEnabled)
+                    portfolio.RecordApiCostUsd(lookup.ApiCostUsd);
             }
 
             // Only halt if total portfolio value (not just free USDC) is depleted
@@ -1027,6 +1059,14 @@ while (!cts.Token.IsCancellationRequested)
             break;
         }
     }
+    catch (TradingBlockedException ex)
+    {
+        fatalExitCode = 3;
+        log.LogCritical(ex, "Emergency stop after first definitive CLOB HTTP 403");
+        Con($"{RED}EMERGENCY STOP: {ex.Message}{RESET}");
+        notifier.NotifyError(cycle, ex);
+        break;
+    }
     catch (OperationCanceledException) when (cts.Token.IsCancellationRequested)
     {
         break;
@@ -1076,7 +1116,7 @@ if (console_)
     Console.WriteLine(new string('=', 60));
 }
 
-return 0;
+return fatalExitCode;
 
 static string Truncate(string s, int maxLen) => s.Length <= maxLen ? s : s[..maxLen] + "...";
 

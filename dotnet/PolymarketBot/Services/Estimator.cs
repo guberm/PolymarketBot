@@ -87,7 +87,9 @@ public sealed class Estimator
         return result is null
             ? null
             : new VerificationResult(result.Value.Probability,
-                ApiPricing.Calculate(_config.ApiPricing, provider, result.Value.InputTokens, result.Value.OutputTokens));
+                _config.LlmCostTrackingEnabled
+                    ? ApiPricing.Calculate(_config.ApiPricing, provider, result.Value.InputTokens, result.Value.OutputTokens)
+                    : 0);
     }
 
     // ── Single-provider estimation ─────────────────────────────────────────
@@ -110,7 +112,9 @@ public sealed class Estimator
             if (string.IsNullOrEmpty(firstReasoning)) firstReasoning = result.Value.Reasoning;
         }
 
-        LastApiCostUsd = ApiPricing.Calculate(_config.ApiPricing, _config.AiProvider, totalInput, totalOutput);
+        LastApiCostUsd = _config.LlmCostTrackingEnabled
+            ? ApiPricing.Calculate(_config.ApiPricing, _config.AiProvider, totalInput, totalOutput)
+            : 0;
         return BuildEstimate(market, rawEstimates, totalInput, totalOutput, firstReasoning,
             apiCostUsd: LastApiCostUsd,
             providerEstimates: rawEstimates.Count > 0
@@ -142,7 +146,8 @@ public sealed class Estimator
         {
             var (provider, probs, pInput, pOutput, pReasoning) = run;
             totalInput += pInput; totalOutput += pOutput;
-            totalCost += ApiPricing.Calculate(_config.ApiPricing, provider, pInput, pOutput);
+            if (_config.LlmCostTrackingEnabled)
+                totalCost += ApiPricing.Calculate(_config.ApiPricing, provider, pInput, pOutput);
             if (probs.Count == 0) { _log.LogWarning("  {Provider}: no valid estimates — skipped", provider); continue; }
             providerResults.Add((provider, probs, pInput, pOutput, pReasoning));
             if (string.IsNullOrEmpty(firstReasoning)) firstReasoning = pReasoning;
