@@ -102,34 +102,35 @@ class PaperTrader:
 
 
 class LiveTrader:
-    """Real execution via Polymarket CLOB API using py-clob-client."""
+    """Real execution via the Polymarket CLOB V2 API."""
 
     def __init__(self, config: BotConfig):
         try:
-            from py_clob_client.client import ClobClient
+            from py_clob_client_v2 import ApiCreds, ClobClient
         except ImportError:
             raise RuntimeError(
-                "Live trading requires py-clob-client: pip install py-clob-client"
+                "Live trading requires py-clob-client-v2>=1.1.0: pip install py-clob-client-v2"
+            )
+
+        creds = None
+        if config.polymarket_api_key and config.polymarket_api_secret:
+            creds = ApiCreds(
+                api_key=config.polymarket_api_key,
+                api_secret=config.polymarket_api_secret,
+                api_passphrase=config.polymarket_api_passphrase,
             )
 
         self.client = ClobClient(
-            config.clob_host,
+            host=config.clob_host,
             key=config.polymarket_private_key or None,
             chain_id=config.polymarket_chain_id,
+            creds=creds,
             signature_type=config.polymarket_signature_type,
             funder=config.polymarket_funder_address or None,
         )
 
-        # Use pre-generated CLOB API credentials if provided, otherwise derive
-        if config.polymarket_api_key and config.polymarket_api_secret:
-            from py_clob_client.clob_types import ApiCreds
-            self.client.set_api_creds(ApiCreds(
-                api_key=config.polymarket_api_key,
-                api_secret=config.polymarket_api_secret,
-                api_passphrase=config.polymarket_api_passphrase,
-            ))
-        else:
-            self.client.set_api_creds(self.client.create_or_derive_api_creds())
+        if creds is None:
+            self.client.set_api_creds(self.client.create_or_derive_api_key())
         self.journal = OrderJournal(config.data_dir)
         log.info("Live CLOB client initialized")
 
@@ -243,7 +244,7 @@ class LiveTrader:
     def get_balance(self) -> Optional[float]:
         """Fetch actual USDC balance from CLOB API. Returns balance in USD."""
         try:
-            from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
+            from py_clob_client_v2 import AssetType, BalanceAllowanceParams
             params = BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
             resp = self.client.get_balance_allowance(params)
             balance_raw = float(resp.get("balance", 0))
@@ -283,7 +284,8 @@ class LiveTrader:
 
         if not matched:
             try:
-                self.client.cancel(order_id)
+                from py_clob_client_v2 import OrderPayload
+                self.client.cancel_order(OrderPayload(orderID=order_id))
             except Exception as exc:
                 log.warning(f"Cancel failed: {exc}")
             try:
@@ -302,8 +304,7 @@ class LiveTrader:
         return best
 
     def execute(self, signal: Signal, portfolio: Portfolio) -> Optional[Trade]:
-        from py_clob_client.clob_types import OrderArgs, OrderType
-        from py_clob_client.order_builder.constants import BUY
+        from py_clob_client_v2 import OrderArgs, OrderType, Side as ClobSide
 
         market = signal.market
         # The pre-trade order-book quote already selected the worst acceptable level.
@@ -314,9 +315,9 @@ class LiveTrader:
         try:
             order_args = OrderArgs(
                 token_id=token_id,
-                amount=size_usd,
                 price=price,
-                side=BUY,
+                size=size_usd / price,
+                side=ClobSide.BUY,
             )
             signed_order = self.client.create_order(order_args)
         except Exception as e:
@@ -392,7 +393,7 @@ class LiveTrader:
 
     def _get_actual_conditional_balance(self, token_id: str) -> Optional[float]:
         """Refresh CLOB cache and return actual on-chain conditional token balance."""
-        from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
+        from py_clob_client_v2 import AssetType, BalanceAllowanceParams
         try:
             # Refresh CLOB's cached view of on-chain state
             self.client.update_balance_allowance(
@@ -429,8 +430,7 @@ class LiveTrader:
         return ghosts
 
     def execute_sell(self, exit_signal: ExitSignal, portfolio: Portfolio) -> Optional[Trade]:
-        from py_clob_client.clob_types import OrderArgs, OrderType
-        from py_clob_client.order_builder.constants import SELL
+        from py_clob_client_v2 import OrderArgs, OrderType, Side as ClobSide
 
         pos = exit_signal.position
         if not pos.book_depth_complete or pos.liquidation_limit_price <= 0:
@@ -457,9 +457,9 @@ class LiveTrader:
         try:
             order_args = OrderArgs(
                 token_id=pos.token_id,
-                amount=sell_shares,  # SELL amount is in tokens
                 price=price,
-                side=SELL,
+                size=sell_shares,
+                side=ClobSide.SELL,
             )
             signed_order = self.client.create_order(order_args)
         except Exception as e:
@@ -512,8 +512,7 @@ class LiveTrader:
 
     def execute_topup_and_sell(self, candidate: TopupCandidate, portfolio: Portfolio) -> Optional[Trade]:
         """Buy 5 tokens to reach CLOB minimum, then sell all tokens to exit stuck position."""
-        from py_clob_client.clob_types import OrderArgs, OrderType
-        from py_clob_client.order_builder.constants import BUY, SELL
+        from py_clob_client_v2 import OrderArgs, OrderType, Side as ClobSide
 
         pos = candidate.position
         buy_price = candidate.buy_limit_price
@@ -526,9 +525,9 @@ class LiveTrader:
         try:
             buy_args = OrderArgs(
                 token_id=pos.token_id,
-                amount=buy_usd,
                 price=buy_price,
-                side=BUY,
+                size=candidate.tokens_to_buy,
+                side=ClobSide.BUY,
             )
             signed_order = self.client.create_order(buy_args)
         except Exception as e:
@@ -574,9 +573,9 @@ class LiveTrader:
         try:
             sell_args = OrderArgs(
                 token_id=pos.token_id,
-                amount=total_shares,
                 price=sell_price,
-                side=SELL,
+                size=total_shares,
+                side=ClobSide.SELL,
             )
             signed_order = self.client.create_order(sell_args)
         except Exception as e:

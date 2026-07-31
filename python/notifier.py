@@ -157,7 +157,7 @@ class Notifier:
 
             context = ssl.create_default_context()
             if cfg.email_use_tls:
-                with smtplib.SMTP(cfg.email_smtp_host, cfg.email_smtp_port) as smtp:
+                with smtplib.SMTP(cfg.email_smtp_host, cfg.email_smtp_port, timeout=5) as smtp:
                     smtp.ehlo()
                     smtp.starttls(context=context)
                     smtp.ehlo()
@@ -165,7 +165,7 @@ class Notifier:
                         smtp.login(cfg.email_user, cfg.email_password)
                     smtp.sendmail(msg["From"], [cfg.email_to], msg.as_string())
             else:
-                with smtplib.SMTP_SSL(cfg.email_smtp_host, cfg.email_smtp_port, context=context) as smtp:
+                with smtplib.SMTP_SSL(cfg.email_smtp_host, cfg.email_smtp_port, timeout=5, context=context) as smtp:
                     if cfg.email_user and cfg.email_password:
                         smtp.login(cfg.email_user, cfg.email_password)
                     smtp.sendmail(msg["From"], [cfg.email_to], msg.as_string())

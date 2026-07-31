@@ -59,6 +59,7 @@ public sealed class Notifier
                 EnableSsl = _config.EmailUseTls,
                 DeliveryMethod = SmtpDeliveryMethod.Network,
                 UseDefaultCredentials = false,
+                Timeout = 5000,
             };
 #pragma warning restore SYSLIB0021
             if (!string.IsNullOrEmpty(_config.EmailUser))
@@ -87,7 +88,7 @@ public sealed class Notifier
         }
         catch (Exception ex)
         {
-            _logger.LogWarning("Email notification failed: {Error}", ex.Message);
+            _logger.LogWarning("Email notification failed: {Error}", ex.GetBaseException().Message);
         }
     }
 

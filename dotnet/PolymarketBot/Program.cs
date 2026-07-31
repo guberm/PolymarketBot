@@ -856,8 +856,8 @@ while (!cts.Token.IsCancellationRequested)
                 portfolio.RecordApiCostUsd(estimator.LastApiCostUsd);
             if (estimate is null)
             {
-                log.LogInformation("  {Idx} SKIP (estimation failed)", idx);
-                Con($"  {idx} -> {RED}FAILED{RESET}");
+                log.LogInformation("  {Idx} SKIP (no usable estimate)", idx);
+                Con($"  {idx} -> {YELLOW}SKIP (no usable estimate){RESET}");
                 continue;
             }
             evaluatedMarkets.Add(market);

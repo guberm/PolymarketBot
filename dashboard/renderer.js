@@ -974,10 +974,7 @@ function formatLogLine(entry) {
 async function exportLog() {
   // Only export what is currently visible — both sources filtered by logClearedAt
   const isVisible = l => parseTs(l.timestamp) > logClearedAt
-  const allLines = DashboardModel.dedupeLogs([...logs.filter(isVisible), ...extraLogLines.filter(isVisible)])
-    .sort((a, b) => parseTs(a.timestamp) - parseTs(b.timestamp))
-    .map(l => `${l.timestamp}\t${(l.level||'').padEnd(8)}\t${l.message||''}`)
-    .join('\n')
+  const allLines = DashboardModel.formatLogText([...logs.filter(isVisible), ...extraLogLines.filter(isVisible)])
   const defaultName = `bot-log-${new Date().toISOString().slice(0,19).replace(/:/g,'-')}.txt`
   await api.saveFile({ content: allLines, defaultName })
 }
@@ -1560,18 +1557,21 @@ function initModals() {
 
   $('btn-open-logs-dir').addEventListener('click', () => api.openLogsDir())
   $('btn-export-log').addEventListener('click', exportLog)
-  $('btn-copy-log').addEventListener('click', () => {
+  $('btn-copy-log').addEventListener('click', async () => {
     const isVisible = l => parseTs(l.timestamp) > logClearedAt
-    const text = [...logs.filter(isVisible), ...extraLogLines.filter(isVisible)]
-      .sort((a, b) => parseTs(a.timestamp) - parseTs(b.timestamp))
-      .map(l => `${l.timestamp}\t${(l.level||'').padEnd(8)}\t${l.message||''}`)
-      .join('\n')
-    navigator.clipboard.writeText(text).then(() => {
-      const btn = $('btn-copy-log')
-      const orig = btn.querySelector('span').textContent
+    const text = DashboardModel.formatLogText([...logs.filter(isVisible), ...extraLogLines.filter(isVisible)])
+    const btn = $('btn-copy-log')
+    const span = btn.querySelector('span')
+    const orig = span.textContent
+    const origTitle = btn.title
+    try {
+      await api.copyText(text)
       btn.querySelector('span').textContent = '✓'
-      setTimeout(() => { btn.querySelector('span').textContent = orig }, 1500)
-    })
+    } catch (error) {
+      span.textContent = '⚠'
+      btn.title = `Copy failed: ${error.message}`
+    }
+    setTimeout(() => { span.textContent = orig; btn.title = origTitle }, 1500)
   })
   $('btn-clear-log').addEventListener('click', () => {
     logClearedAt = Date.now()

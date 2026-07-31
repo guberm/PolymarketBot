@@ -11,15 +11,21 @@ namespace PolymarketBot.Services;
 
 /// <summary>
 /// Polymarket CLOB API client with proper EIP-712 + HMAC authentication.
-/// Implements the same auth protocol as py-clob-client.
+/// Implements the same auth and order protocol as py-clob-client-v2.
 /// </summary>
 public sealed class ClobApiClient
 {
     // EIP-712 auth constants
     private const string AuthDomainName = "ClobAuthDomain";
     private const string ExchangeDomainName = "Polymarket CTF Exchange";
-    private const string DomainVersion = "1";
+    private const string AuthDomainVersion = "1";
+    private const string ExchangeDomainVersion = "2";
     private const string AuthMessage = "This message attests that I control the given wallet";
+    private const string Bytes32Zero = "0x0000000000000000000000000000000000000000000000000000000000000000";
+    private const string MainnetExchangeV1 = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E";
+    private const string MainnetNegRiskExchangeV1 = "0xC5d563A36AE78145C45a50134d48A1215220f80a";
+    private const string ExchangeV2 = "0xE111180000d2663C0091e4f400237545B87B996B";
+    private const string NegRiskExchangeV2 = "0xe2222d279d744050d28e00520010520000310F59";
 
     // Precomputed type hashes
     private static readonly byte[] AuthDomainTypeHash;
@@ -36,7 +42,7 @@ public sealed class ClobApiClient
         ClobAuthTypeHash = Keccak(
             Encoding.UTF8.GetBytes("ClobAuth(address address,string timestamp,uint256 nonce,string message)"));
         OrderTypeHash = Keccak(
-            Encoding.UTF8.GetBytes("Order(uint256 salt,address maker,address signer,address taker,uint256 tokenId,uint256 makerAmount,uint256 takerAmount,uint256 expiration,uint256 nonce,uint256 feeRateBps,uint8 side,uint8 signatureType)"));
+            Encoding.UTF8.GetBytes("Order(uint256 salt,address maker,address signer,uint256 tokenId,uint256 makerAmount,uint256 takerAmount,uint8 side,uint8 signatureType,uint256 timestamp,bytes32 metadata,bytes32 builder)"));
     }
 
     private readonly string _host;
@@ -86,8 +92,8 @@ public sealed class ClobApiClient
             : config.PolymarketFunderAddress;
 
         _authDomainSep = ComputeAuthDomainSeparator(_chainId);
-        _exchangeAddress = config.ExchangeAddress;
-        _negRiskExchangeAddress = config.NegRiskExchangeAddress;
+        _exchangeAddress = ResolveV2ExchangeAddress(config.ExchangeAddress, false);
+        _negRiskExchangeAddress = ResolveV2ExchangeAddress(config.NegRiskExchangeAddress, true);
         _exchangeDomainSep = ComputeExchangeDomainSeparator(_chainId, _exchangeAddress);
         _negRiskExchangeDomainSep = ComputeExchangeDomainSeparator(_chainId, _negRiskExchangeAddress);
 
@@ -105,7 +111,7 @@ public sealed class ClobApiClient
             _apiPassphrase = config.PolymarketApiPassphrase;
         }
 
-        _log.LogInformation("CLOB client: signer={Signer}, funder={Funder}, sigType={SigType}",
+        _log.LogInformation("CLOB v2 client: signer={Signer}, funder={Funder}, sigType={SigType}",
             _signerAddress, _funderAddress, _signatureType);
     }
 
@@ -215,8 +221,9 @@ public sealed class ClobApiClient
             return null;
         }
 
-        // 3. Build order struct
+        // 3. Build CLOB V2 order struct
         long salt = GenerateSalt();
+        long timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         var domainSep = negRisk ? _negRiskExchangeDomainSep : _exchangeDomainSep;
 
         // 4. Sign order with EIP-712 (direct ECDSA, no personal sign prefix)
@@ -225,15 +232,14 @@ public sealed class ClobApiClient
             Salt = salt,
             Maker = _funderAddress,
             Signer = _signerAddress,
-            Taker = "0x0000000000000000000000000000000000000000",
             TokenId = tokenId,
             MakerAmount = makerAmount,
             TakerAmount = takerAmount,
-            Expiration = 0,
-            Nonce = 0,
-            FeeRateBps = 0,
             Side = 0, // BUY = 0
             SignatureType = _signatureType,
+            Timestamp = timestamp,
+            Metadata = Bytes32Zero,
+            Builder = Bytes32Zero,
         };
 
         var signature = SignOrder(orderFields, domainSep);
@@ -247,19 +253,21 @@ public sealed class ClobApiClient
                 ["salt"] = salt,
                 ["maker"] = _funderAddress,
                 ["signer"] = _signerAddress,
-                ["taker"] = "0x0000000000000000000000000000000000000000",
                 ["tokenId"] = tokenId,
                 ["makerAmount"] = makerAmount.ToString(),
                 ["takerAmount"] = takerAmount.ToString(),
-                ["expiration"] = "0",
-                ["nonce"] = "0",
-                ["feeRateBps"] = "0",
                 ["side"] = "BUY",
+                ["expiration"] = "0",
                 ["signatureType"] = _signatureType,
+                ["timestamp"] = timestamp.ToString(),
+                ["metadata"] = Bytes32Zero,
+                ["builder"] = Bytes32Zero,
                 ["signature"] = sigHex,
             },
             ["owner"] = _apiKey,
             ["orderType"] = "GTC",
+            ["deferExec"] = false,
+            ["postOnly"] = false,
         };
 
         var bodyJson = JsonSerializer.Serialize(body, _jsonOpts);
@@ -379,6 +387,7 @@ public sealed class ClobApiClient
         }
 
         long salt = GenerateSalt();
+        long timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         var domainSep = negRisk ? _negRiskExchangeDomainSep : _exchangeDomainSep;
 
         var orderFields = new OrderFields
@@ -386,15 +395,14 @@ public sealed class ClobApiClient
             Salt = salt,
             Maker = _funderAddress,
             Signer = _signerAddress,
-            Taker = "0x0000000000000000000000000000000000000000",
             TokenId = tokenId,
             MakerAmount = makerAmount,
             TakerAmount = takerAmount,
-            Expiration = 0,
-            Nonce = 0,
-            FeeRateBps = 0,
             Side = 1, // SELL = 1
             SignatureType = _signatureType,
+            Timestamp = timestamp,
+            Metadata = Bytes32Zero,
+            Builder = Bytes32Zero,
         };
 
         var signature = SignOrder(orderFields, domainSep);
@@ -407,19 +415,21 @@ public sealed class ClobApiClient
                 ["salt"] = salt,
                 ["maker"] = _funderAddress,
                 ["signer"] = _signerAddress,
-                ["taker"] = "0x0000000000000000000000000000000000000000",
                 ["tokenId"] = tokenId,
                 ["makerAmount"] = makerAmount.ToString(),
                 ["takerAmount"] = takerAmount.ToString(),
-                ["expiration"] = "0",
-                ["nonce"] = "0",
-                ["feeRateBps"] = "0",
                 ["side"] = "SELL",
+                ["expiration"] = "0",
                 ["signatureType"] = _signatureType,
+                ["timestamp"] = timestamp.ToString(),
+                ["metadata"] = Bytes32Zero,
+                ["builder"] = Bytes32Zero,
                 ["signature"] = sigHex,
             },
             ["owner"] = _apiKey,
             ["orderType"] = "GTC",
+            ["deferExec"] = false,
+            ["postOnly"] = false,
         };
 
         var bodyJson = JsonSerializer.Serialize(body, _jsonOpts);
@@ -614,8 +624,7 @@ public sealed class ClobApiClient
             }
 
             var doc = JsonDocument.Parse(respText);
-            _log.LogInformation("Balance API response: {Body}", respText);
-            Console.WriteLine($"[BALANCE API] raw response: {respText}");
+            _log.LogDebug("[BALANCE-RAW] {Body}", respText[..Math.Min(respText.Length, 300)]);
             if (doc.RootElement.TryGetProperty("balance", out var balEl))
             {
                 var balStr = balEl.GetString() ?? "0";
@@ -816,8 +825,8 @@ public sealed class ClobApiClient
 
     private byte[] SignOrder(OrderFields o, byte[] domainSep)
     {
-        // Encode all 12 order fields
-        var data = new byte[32 * 13]; // typeHash + 12 fields
+        // CLOB V2: typeHash + 11 fields from the official py-clob-client-v2 schema.
+        var data = new byte[32 * 12];
         int pos = 0;
 
         void Write(byte[] src) { Array.Copy(src, 0, data, pos, 32); pos += 32; }
@@ -826,19 +835,17 @@ public sealed class ClobApiClient
         Write(AbiEncodeUint256(o.Salt));
         Write(AbiEncodeAddress(o.Maker));
         Write(AbiEncodeAddress(o.Signer));
-        Write(AbiEncodeAddress(o.Taker));
         Write(AbiEncodeUint256(BigInteger.Parse(o.TokenId)));
         Write(AbiEncodeUint256(o.MakerAmount));
         Write(AbiEncodeUint256(o.TakerAmount));
-        Write(AbiEncodeUint256(o.Expiration));
-        Write(AbiEncodeUint256(o.Nonce));
-        Write(AbiEncodeUint256(o.FeeRateBps));
         Write(AbiEncodeUint8(o.Side));
         Write(AbiEncodeUint8(o.SignatureType));
+        Write(AbiEncodeUint256(o.Timestamp));
+        Write(AbiEncodeBytes32(o.Metadata));
+        Write(AbiEncodeBytes32(o.Builder));
 
         var structHash = Keccak(data);
 
-        // EIP-712 digest
         var signable = new byte[2 + 32 + 32];
         signable[0] = 0x19;
         signable[1] = 0x01;
@@ -846,7 +853,7 @@ public sealed class ClobApiClient
         Array.Copy(structHash, 0, signable, 34, 32);
         var digest = Keccak(signable);
 
-        // Direct ECDSA sign (orders use _sign_hash, not personal sign)
+        // Signature types 0/1/2 all use direct EIP-712 signing in py-clob-client-v2.
         return EcdsaSign(digest);
     }
 
@@ -957,6 +964,13 @@ public sealed class ClobApiClient
         return result;
     }
 
+    private static byte[] AbiEncodeBytes32(string value)
+    {
+        var hex = value.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? value[2..] : value;
+        if (hex.Length != 64) throw new ArgumentException("bytes32 value must contain exactly 32 bytes", nameof(value));
+        return HexToBytes(hex);
+    }
+
     // ── Domain separator computation ────────────────────────────────
 
     private static byte[] ComputeAuthDomainSeparator(int chainId)
@@ -965,7 +979,7 @@ public sealed class ClobApiClient
         var data = new byte[32 * 4];
         Array.Copy(AuthDomainTypeHash, 0, data, 0, 32);
         Array.Copy(Keccak(Encoding.UTF8.GetBytes(AuthDomainName)), 0, data, 32, 32);
-        Array.Copy(Keccak(Encoding.UTF8.GetBytes(DomainVersion)), 0, data, 64, 32);
+        Array.Copy(Keccak(Encoding.UTF8.GetBytes(AuthDomainVersion)), 0, data, 64, 32);
         Array.Copy(AbiEncodeUint256(chainId), 0, data, 96, 32);
         return Keccak(data);
     }
@@ -976,7 +990,7 @@ public sealed class ClobApiClient
         var data = new byte[32 * 5];
         Array.Copy(ExchangeDomainTypeHash, 0, data, 0, 32);
         Array.Copy(Keccak(Encoding.UTF8.GetBytes(ExchangeDomainName)), 0, data, 32, 32);
-        Array.Copy(Keccak(Encoding.UTF8.GetBytes(DomainVersion)), 0, data, 64, 32);
+        Array.Copy(Keccak(Encoding.UTF8.GetBytes(ExchangeDomainVersion)), 0, data, 64, 32);
         Array.Copy(AbiEncodeUint256(chainId), 0, data, 96, 32);
         Array.Copy(AbiEncodeAddress(contractAddr), 0, data, 128, 32);
         return Keccak(data);
@@ -984,10 +998,18 @@ public sealed class ClobApiClient
 
     // ── Utility helpers ─────────────────────────────────────────────
 
+    private static string ResolveV2ExchangeAddress(string configured, bool negRisk)
+    {
+        var legacy = negRisk ? MainnetNegRiskExchangeV1 : MainnetExchangeV1;
+        if (string.IsNullOrWhiteSpace(configured) || configured.Equals(legacy, StringComparison.OrdinalIgnoreCase))
+            return negRisk ? NegRiskExchangeV2 : ExchangeV2;
+        return configured;
+    }
+
     private static long GenerateSalt()
     {
-        // Matches py-clob-client: round(now * random())
-        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        // Matches py-clob-client-v2: random fraction of Unix milliseconds.
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         return (long)(now * Random.Shared.NextDouble());
     }
 
@@ -1277,14 +1299,13 @@ public sealed class ClobApiClient
         public long Salt;
         public string Maker;
         public string Signer;
-        public string Taker;
         public string TokenId;
         public long MakerAmount;
         public long TakerAmount;
-        public long Expiration;
-        public long Nonce;
-        public long FeeRateBps;
         public int Side;
         public int SignatureType;
+        public long Timestamp;
+        public string Metadata;
+        public string Builder;
     }
 }

@@ -27,6 +27,7 @@ contextBridge.exposeInMainWorld('api', {
   // File export + folder
   saveFile:      (opts)  => ipcRenderer.invoke('save-file', opts),
   openLogsDir:   ()      => ipcRenderer.invoke('open-logs-dir'),
+  copyText:      (text)  => ipcRenderer.invoke('copy-text', text),
 
   // UI settings
   readSettings:  ()      => ipcRenderer.invoke('read-settings'),

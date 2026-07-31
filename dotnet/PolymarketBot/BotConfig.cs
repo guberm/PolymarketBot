@@ -126,8 +126,8 @@ public sealed class BotConfig
     // Polymarket endpoints / contracts
     public string GammaApiHost { get; init; } = "";
     public string ClobHost { get; init; } = "";
-    public string ExchangeAddress { get; init; } = "";
-    public string NegRiskExchangeAddress { get; init; } = "";
+    public string ExchangeAddress { get; init; } = "0xE111180000d2663C0091e4f400237545B87B996B";
+    public string NegRiskExchangeAddress { get; init; } = "0xe2222d279d744050d28e00520010520000310F59";
 
     // Auto-claim: send CTF.redeemPositions on-chain when a winning position resolves
     public bool AutoClaim { get; init; } = true;
@@ -253,8 +253,8 @@ public sealed class BotConfig
             PolymarketApiPassphrase = Cfg("polymarket_api_passphrase", "POLYMARKET_API_PASSPHRASE", ""),
             GammaApiHost = Cfg("gamma_api_host", "GAMMA_API_HOST", ""),
             ClobHost = Cfg("clob_host", "CLOB_HOST", ""),
-            ExchangeAddress = Cfg("exchange_address", "EXCHANGE_ADDRESS", ""),
-            NegRiskExchangeAddress = Cfg("neg_risk_exchange_address", "NEG_RISK_EXCHANGE_ADDRESS", ""),
+            ExchangeAddress = Cfg("exchange_address", "EXCHANGE_ADDRESS", "0xE111180000d2663C0091e4f400237545B87B996B"),
+            NegRiskExchangeAddress = Cfg("neg_risk_exchange_address", "NEG_RISK_EXCHANGE_ADDRESS", "0xe2222d279d744050d28e00520010520000310F59"),
             AutoClaim = Cfg("auto_claim", "AUTO_CLAIM", "true").Equals("true", StringComparison.OrdinalIgnoreCase),
             PolygonRpcUrl = Cfg("polygon_rpc_url", "POLYGON_RPC_URL", "https://polygon-rpc.com"),
             CtfAddress = Cfg("ctf_address", "CTF_ADDRESS", ""),

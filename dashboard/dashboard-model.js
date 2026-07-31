@@ -155,6 +155,7 @@ function parseProcessLogChunk(buffer = '', chunk = '', fallbackLevel = 'INFO', f
   const lines = (buffer + String(chunk)).split(/\r?\n/)
   const remaining = lines.pop() || ''
   const entries = lines.filter(line => line.trim()).map(line => {
+    line = line.replace(/^\uFEFF/, '')
     try {
       const parsed = JSON.parse(line)
       if (parsed && typeof parsed === 'object' && parsed.message !== undefined)
@@ -175,7 +176,8 @@ function parseProcessLogChunk(buffer = '', chunk = '', fallbackLevel = 'INFO', f
 function dedupeLogs(entries = []) {
   const seen = new Map()
   return entries.filter(entry => {
-    const key = `${entry.level || ''}\u0000${entry.message || ''}`
+    const level = String(entry.level || '').toUpperCase()
+    const key = `${({ INFORMATION: 'INFO', WARNING: 'WARN' }[level] || level)}\u0000${cleanLogMessage(entry.message)}`
     const timestamp = asTime(entry.timestamp)
     const prior = seen.get(key) || []
     if (prior.some(value => timestamp && value ? Math.abs(timestamp - value) <= 2000 : timestamp === value)) return false
@@ -185,6 +187,17 @@ function dedupeLogs(entries = []) {
   })
 }
 
-const dashboardModel = { buildAttention, buildProviderHealth, buildHistoryPoint, buildHistorySeries, clampPaneSize, parseProcessLogChunk, dedupeLogs }
+function cleanLogMessage(message) {
+  return String(message || '').replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').trim()
+}
+
+function formatLogText(entries = []) {
+  return dedupeLogs(entries)
+    .sort((a, b) => asTime(a.timestamp) - asTime(b.timestamp))
+    .map(entry => `${entry.timestamp || ''}\t${String(entry.level || '').padEnd(8)}\t${cleanLogMessage(entry.message)}`)
+    .join('\n')
+}
+
+const dashboardModel = { buildAttention, buildProviderHealth, buildHistoryPoint, buildHistorySeries, clampPaneSize, parseProcessLogChunk, dedupeLogs, formatLogText }
 if (typeof module !== 'undefined') module.exports = dashboardModel
 if (typeof window !== 'undefined') window.DashboardModel = dashboardModel

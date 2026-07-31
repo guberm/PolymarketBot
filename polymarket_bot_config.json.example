@@ -23,8 +23,8 @@
   "polymarket_private_key": "0x...",
   "polymarket_funder_address": "0x...",
   "polymarket_signature_type": 0,
-  "exchange_address": "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E",
-  "neg_risk_exchange_address": "0xC5d563A36AE78145C45a50134d48A1215220f80a",
+  "exchange_address": "0xE111180000d2663C0091e4f400237545B87B996B",
+  "neg_risk_exchange_address": "0xe2222d279d744050d28e00520010520000310F59",
 
   "____SECTION_AUTOCLAIM____": "── Auto-claim won positions on-chain (.NET only) ──────────────────────",
 
