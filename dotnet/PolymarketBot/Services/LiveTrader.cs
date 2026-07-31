@@ -205,15 +205,22 @@ public sealed class LiveTrader : ITrader
             result = await _clob.PostMarketBuyOrderAsync(tokenId, sizeUsd, price, ct);
             if (result is null)
             {
+                _journal.Complete(intentId);
                 _log.LogWarning("CLOB order returned null (see errors above)");
                 return null;
             }
             _journal.Submitted(intentId, result.OrderId);
             _log.LogInformation("CLOB GTC order submitted: {OrderId}", result.OrderId);
         }
+        catch (ClobOrderRejectedException ex)
+        {
+            TradingSafety.HandleDefinitiveRejection(_journal, intentId, ex);
+            _log.LogError("CLOB rejected BUY: {Error}", ex.Message);
+            return null;
+        }
         catch (Exception ex)
         {
-            _log.LogError("CLOB order exception: {Error}", ex.Message);
+            _log.LogError("CLOB BUY outcome unknown; intent retained for recovery: {Error}", ex.Message);
             return null;
         }
 
@@ -307,15 +314,22 @@ public sealed class LiveTrader : ITrader
             result = await _clob.PostMarketSellOrderAsync(pos.TokenId, pos.Shares, price, ct);
             if (result is null)
             {
+                _journal.Complete(intentId);
                 _log.LogWarning("CLOB SELL order returned null");
                 return null;
             }
             _journal.Submitted(intentId, result.OrderId);
             _log.LogInformation("CLOB SELL GTC order submitted: {OrderId}", result.OrderId);
         }
+        catch (ClobOrderRejectedException ex)
+        {
+            TradingSafety.HandleDefinitiveRejection(_journal, intentId, ex);
+            _log.LogError("CLOB rejected SELL: {Error}", ex.Message);
+            return null;
+        }
         catch (Exception ex)
         {
-            _log.LogError("CLOB SELL order exception: {Error}", ex.Message);
+            _log.LogError("CLOB SELL outcome unknown; intent retained for recovery: {Error}", ex.Message);
             return null;
         }
 
@@ -379,15 +393,22 @@ public sealed class LiveTrader : ITrader
             buyResult = await _clob.PostMarketBuyOrderAsync(pos.TokenId, buyUsd, buyPrice, ct);
             if (buyResult is null)
             {
+                _journal.Complete(buyIntentId);
                 _log.LogWarning("TOPUP BUY order returned null");
                 return null;
             }
             _journal.Submitted(buyIntentId, buyResult.OrderId);
             _log.LogInformation("TOPUP BUY GTC order submitted: {OrderId}", buyResult.OrderId);
         }
+        catch (ClobOrderRejectedException ex)
+        {
+            TradingSafety.HandleDefinitiveRejection(_journal, buyIntentId, ex);
+            _log.LogError("CLOB rejected TOPUP BUY: {Error}", ex.Message);
+            return null;
+        }
         catch (Exception ex)
         {
-            _log.LogError("TOPUP BUY order exception: {Error}", ex.Message);
+            _log.LogError("TOPUP BUY outcome unknown; intent retained for recovery: {Error}", ex.Message);
             return null;
         }
 
@@ -425,15 +446,22 @@ public sealed class LiveTrader : ITrader
             sellResult = await _clob.PostMarketSellOrderAsync(pos.TokenId, totalShares, sellPrice, ct);
             if (sellResult is null)
             {
+                _journal.Complete(sellIntentId);
                 _log.LogWarning("TOPUP SELL order returned null (position now has {Shares:F2} tokens)", totalShares);
                 return null;
             }
             _journal.Submitted(sellIntentId, sellResult.OrderId);
             _log.LogInformation("TOPUP SELL GTC order submitted: {OrderId}", sellResult.OrderId);
         }
+        catch (ClobOrderRejectedException ex)
+        {
+            TradingSafety.HandleDefinitiveRejection(_journal, sellIntentId, ex);
+            _log.LogError("CLOB rejected TOPUP SELL: {Error}", ex.Message);
+            return null;
+        }
         catch (Exception ex)
         {
-            _log.LogError("TOPUP SELL order exception (position now has {Shares:F2} tokens): {Error}", totalShares, ex.Message);
+            _log.LogError("TOPUP SELL outcome unknown; intent retained for recovery: {Error}", ex.Message);
             return null;
         }
 

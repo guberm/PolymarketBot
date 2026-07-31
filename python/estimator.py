@@ -124,7 +124,8 @@ class Estimator:
         if result is None:
             return None
         probability, _, input_tokens, output_tokens = result
-        cost = calculate_api_cost(self.config.api_pricing, provider, input_tokens, output_tokens)
+        cost = (calculate_api_cost(self.config.api_pricing, provider, input_tokens, output_tokens)
+                if self.config.llm_cost_tracking_enabled else 0.0)
         return probability, input_tokens, output_tokens, cost
 
     # ── Single-provider estimation ─────────────────────────────────────────
@@ -149,7 +150,8 @@ class Estimator:
             if not first_reasoning:
                 first_reasoning = reasoning
 
-        cost = calculate_api_cost(self.config.api_pricing, self._provider, total_input, total_output)
+        cost = (calculate_api_cost(self.config.api_pricing, self._provider, total_input, total_output)
+                if self.config.llm_cost_tracking_enabled else 0.0)
         self.last_api_cost_usd = cost
         return self._build_estimate(market, raw_estimates, total_input, total_output, first_reasoning,
                                     api_cost_usd=cost,
@@ -202,7 +204,8 @@ class Estimator:
         for provider, probs, p_input, p_output, p_reasoning in results:
             total_input += p_input
             total_output += p_output
-            total_cost += calculate_api_cost(self.config.api_pricing, provider, p_input, p_output)
+            if self.config.llm_cost_tracking_enabled:
+                total_cost += calculate_api_cost(self.config.api_pricing, provider, p_input, p_output)
             if not probs:
                 log.warning(f"  {provider}: no valid estimates — skipped")
                 continue

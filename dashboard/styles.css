@@ -242,8 +242,14 @@ body {
   padding-right: 4px;
 }
 
+.left-pane { flex: 0 0 auto; margin-bottom: 0; min-height: 0; }
+#positions-pane { height: 180px; display: flex; flex-direction: column; }
+#charts-pane { height: 180px; }
+#history-pane { height: 150px; display: flex; flex-direction: column; }
+
 .trade-history-card {
   flex: 1;
+  min-height: 180px;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -268,10 +274,12 @@ body {
 }
 
 #right-upper {
+  display: flex;
+  flex-direction: column;
   flex-shrink: 0;
   overflow-y: auto;
   height: 320px;
-  min-height: 80px;
+  min-height: 180px;
 }
 
 /* ── Cards ───────────────────────────────────────────────────────────────── */
@@ -291,6 +299,13 @@ body {
   border-top: none;
   border-bottom: 1px solid var(--border);
 }
+
+.right-pane { flex: 0 0 auto; display: flex; flex-direction: column; min-height: 0; }
+#attention-pane { height: 150px; }
+#providers-pane { height: 100px; }
+#risk-pane { height: 160px; }
+#exit-pane { min-height: 100px; }
+.right-pane > :not(.card-header) { overflow: auto; }
 
 .flex-grow { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
 
@@ -378,15 +393,33 @@ body {
 /* ── Charts ──────────────────────────────────────────────────────────────── */
 .charts-row {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-  margin-bottom: 8px;
+  grid-template-columns: 1fr 6px 1fr;
+  gap: 0;
+  margin-bottom: 0;
 }
-.charts-row .card { margin-bottom: 0; }
-.chart-wrap { padding: 8px; height: 180px; position: relative; }
+.charts-row .card { margin-bottom: 0; display: flex; flex-direction: column; min-width: 0; }
+.charts-row .card:first-child { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.charts-row .card:last-child { border-top-left-radius: 0; border-bottom-left-radius: 0; }
+.chart-wrap { padding: 8px; height: auto; flex: 1; min-height: 0; position: relative; }
 .chart-wrap canvas { width: 100% !important; height: 100% !important; }
-.chart-wrap-history { height: 150px; }
+.chart-wrap-history { height: auto; }
 .chart-summary { padding: 0 12px 8px; font-family: var(--font-mono); }
+
+.history-card .card-header { justify-content: space-between; }
+.history-controls { display: flex; gap: 2px; margin-left: auto; }
+.metric-tab {
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text3);
+  padding: 2px 7px;
+  font: 600 9px var(--font-mono);
+  cursor: pointer;
+  transition: background-color .15s, border-color .15s, color .15s, transform .08s;
+}
+.metric-tab:hover { color: var(--text); background: var(--bg2); }
+.metric-tab.active { color: var(--cyan); border-color: rgba(6,182,212,.35); background: rgba(6,182,212,.1); }
+.metric-tab:active { transform: scale(.96); }
 
 /* ── Risk meters ─────────────────────────────────────────────────────────── */
 .risk-container { padding: 10px 12px; display: flex; flex-direction: column; gap: 10px; }
@@ -698,10 +731,11 @@ body {
 
 /* ── Resizable table containers ──────────────────────────────────────────── */
 #positions-scroll {
-  height: 220px;
-  resize: vertical;
+  flex: 1;
+  height: auto;
   min-height: 80px;
-  max-height: 600px;
+  max-height: none;
+  resize: none;
   overflow: auto;
 }
 
@@ -787,6 +821,9 @@ body.light .tip-icon { background: var(--text2); color: #fff; }
   .stats-row { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .main-grid { display: block; overflow: visible; }
   .left-col, .right-col { overflow: visible; padding: 8px; min-width: 0; }
+  .left-pane, #positions-pane, #charts-pane, #history-pane, .right-pane { height: auto !important; }
+  #positions-scroll { max-height: 320px; }
+  .charts-row { grid-template-columns: 1fr 1fr !important; gap: 8px; }
   .right-col { border-left: 0; }
   #right-upper { height: auto !important; overflow: visible; }
   .rh { display: none; }
@@ -795,7 +832,7 @@ body.light .tip-icon { background: var(--text2); color: #fff; }
 }
 
 @media (max-width: 700px) {
-  .stats-row, .charts-row { grid-template-columns: 1fr; }
+  .stats-row, .charts-row { grid-template-columns: 1fr !important; }
   .header-right { margin-left: 0; }
   .log-controls { flex-wrap: wrap; }
   .details-grid dl { grid-template-columns: 1fr; }

@@ -4,7 +4,7 @@ Autonomous trading agent for [Polymarket](https://polymarket.com) prediction mar
 
 Available in **Python** and **.NET 8** — both implementations share the same logic, config, and data formats.
 
-API costs are tracked against independent USD budgets and are not deducted from trading bankroll. If the total trading portfolio value (bankroll + open positions) drops below $1, the agent halts.
+By default, API costs are tracked against independent USD budgets and are not deducted from trading bankroll; tracking can be disabled without disabling LLM calls. If the total trading portfolio value (bankroll + open positions) drops below $1, the agent halts.
 
 ## How It Works
 
@@ -29,7 +29,7 @@ Every N minutes (default 10):
   8. Recalculate edge and fractional Kelly size at executable VWAP
   9. Check risk limits against liquidation equity (per-position, per-event, per-category, total exposure, daily stop-loss, drawdown)
   10. Execute at the quoted worst book level (paper or live via CLOB GTC limit orders)
-  11. Journal the estimate/decision, track API spend separately, save state, repeat
+  11. Journal the estimate/decision, optionally track API spend separately, save state, repeat
 ```
 
 Only one process may own a data directory at a time. `bot.lock` prevents Python and .NET from trading the same wallet concurrently and is automatically recovered after a crashed process.
@@ -292,6 +292,7 @@ Azure also requires: `azure_openai_api_version` (default `2024-02-01`).
 | `ensemble_temperature` | `0.7` | Temperature for diversity |
 | `max_estimate_tokens` | `1024` | Max output tokens per call |
 | `max_estimate_std` | `0.10` | Skip if ensemble std dev exceeds this |
+| `llm_cost_tracking_enabled` | `true` | Track estimated LLM spend and enforce API budgets; `false` leaves LLM calls enabled |
 | `max_cycle_api_cost_usd` | `1.00` | Stop new evaluations once cycle API spend reaches this USD budget |
 | `max_daily_api_cost_usd` | `10.00` | Stop new evaluations once UTC-day API spend reaches this USD budget |
 | `api_pricing` | provider map | Input/output USD per million tokens, e.g. `anthropic=3/15` |
@@ -426,8 +427,9 @@ python analyze_trades.py --trades ../data/trades.jsonl
 
 ## Agent Survival
 
-- API spend is tracked and limited by independent USD budgets; it does not reduce trading bankroll
-- Estimation stops for the cycle/UTC-day when API spend reaches `max_cycle_api_cost_usd` or `max_daily_api_cost_usd`; the daily API counter is persisted across restarts
+- When `llm_cost_tracking_enabled` is `true`, API spend is tracked and limited by independent USD budgets; it does not reduce trading bankroll
+- Setting `llm_cost_tracking_enabled` to `false` keeps LLM calls running but disables cost accumulation, API-budget enforcement, and dashboard budget warnings; previously saved totals are preserved
+- With tracking enabled, estimation stops for the cycle/UTC-day when API spend reaches `max_cycle_api_cost_usd` or `max_daily_api_cost_usd`; the daily API counter is persisted across restarts
 - Scan skipped when `bankroll < max(min_trade_usd, max_position_pct × bankroll)`
 - Agent halts when liquidation equity (`bankroll + executable bid value`) falls below $1
 - Stale `is_halted` flag auto-clears on restart if portfolio is healthy

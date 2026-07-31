@@ -78,7 +78,7 @@
       <div class="left-col" id="left-col">
 
         <!-- Open Positions -->
-        <div class="card">
+        <div class="card left-pane" id="positions-pane">
           <div class="card-header">
             <span class="card-title" data-i18n="openPositions">ОТКРЫТЫЕ ПОЗИЦИИ</span>
             <span class="tip-icon" data-tip-key="tipPositions">?</span>
@@ -112,29 +112,40 @@
             </table>
           </div>
         </div>
+        <div class="rh rh-v pane-resizer" id="rh-positions" title="Drag or use arrow keys to resize" role="separator" tabindex="0" aria-label="Resize open positions" aria-orientation="horizontal" aria-valuemin="100"></div>
 
         <!-- Charts row -->
-        <div class="charts-row">
-          <div class="card">
+        <div class="charts-row left-pane" id="charts-pane">
+          <div class="card" id="pnl-pane">
             <div class="card-header"><span class="card-title" data-i18n="cumulativePnl">НАКОПЛЕННАЯ П/У</span><span class="tip-icon" data-tip-key="tipCumPnl">?</span></div>
             <div class="chart-wrap"><canvas id="pnl-chart" role="img" aria-label="Cumulative realized profit and loss"></canvas></div>
             <div id="pnl-summary" class="sr-only"></div>
           </div>
-          <div class="card">
+          <div class="rh rh-h pane-resizer" id="rh-charts" title="Drag or use arrow keys to resize" role="separator" tabindex="0" aria-label="Resize chart panels" aria-orientation="vertical" aria-valuemin="220"></div>
+          <div class="card" id="category-pane">
             <div class="card-header"><span class="card-title" data-i18n="exposureByCategory">ПОЗИЦИИ ПО КАТЕГОРИЯМ</span><span class="tip-icon" data-tip-key="tipCatChart">?</span></div>
             <div class="chart-wrap"><canvas id="cat-chart" role="img" aria-label="Open exposure by market category"></canvas></div>
             <div id="cat-summary" class="sr-only"></div>
           </div>
         </div>
+        <div class="rh rh-v pane-resizer" id="rh-charts-row" title="Drag or use arrow keys to resize" role="separator" tabindex="0" aria-label="Resize chart row" aria-orientation="horizontal" aria-valuemin="120"></div>
 
-        <div class="card history-card">
-          <div class="card-header"><span class="card-title" data-i18n="equityHistory">КАПИТАЛ, ПРОСАДКА И API</span></div>
-          <div class="chart-wrap chart-wrap-history"><canvas id="history-chart" aria-label="Equity, drawdown and API cost history" role="img"></canvas></div>
+        <div class="card history-card left-pane" id="history-pane">
+          <div class="card-header">
+            <span class="card-title" data-i18n="portfolioHistory">ИСТОРИЯ ПОРТФЕЛЯ</span>
+            <div class="history-controls" role="group" aria-label="History metric">
+              <button type="button" class="metric-tab active" data-history-mode="equity" aria-pressed="true" data-i18n="historyEquity">Капитал</button>
+              <button type="button" class="metric-tab" data-history-mode="drawdown" aria-pressed="false" data-i18n="historyDrawdown">Просадка</button>
+              <button type="button" class="metric-tab" data-history-mode="api" aria-pressed="false" data-i18n="historyApi">API сегодня</button>
+            </div>
+          </div>
+          <div class="chart-wrap chart-wrap-history"><canvas id="history-chart" aria-label="Portfolio history" role="img"></canvas></div>
           <div id="history-summary" class="chart-summary muted small">Ожидание истории…</div>
         </div>
+        <div class="rh rh-v pane-resizer" id="rh-history" title="Drag or use arrow keys to resize" role="separator" tabindex="0" aria-label="Resize portfolio history and trade history" aria-orientation="horizontal" aria-valuemin="110"></div>
 
         <!-- Trade History -->
-        <div class="card trade-history-card">
+        <div class="card trade-history-card" id="trades-pane">
           <div class="card-header">
             <span class="card-title" data-i18n="tradeHistory">ИСТОРИЯ СДЕЛОК</span>
             <span class="tip-icon" data-tip-key="tipTrades">?</span>
@@ -175,27 +186,30 @@
 
         <!-- Upper: risk + exit (vertically resizable) -->
         <div id="right-upper">
-          <div class="card">
+          <div class="card right-pane" id="attention-pane">
             <div class="card-header">
               <span class="card-title" data-i18n="attentionTitle">ТРЕБУЕТ ВНИМАНИЯ</span>
               <span id="attention-count" class="badge badge-green">0</span>
             </div>
             <div id="attention-list" class="attention-list"></div>
           </div>
+          <div class="rh rh-v pane-resizer" id="rh-attention" title="Drag or use arrow keys to resize" role="separator" tabindex="0" aria-label="Resize attention panel" aria-orientation="horizontal" aria-valuemin="70"></div>
 
-          <div class="card">
+          <div class="card right-pane" id="providers-pane">
             <div class="card-header"><span class="card-title" data-i18n="providerHealth">AI-ПРОВАЙДЕРЫ</span></div>
             <div id="provider-health" class="provider-health"></div>
           </div>
+          <div class="rh rh-v pane-resizer" id="rh-providers" title="Drag or use arrow keys to resize" role="separator" tabindex="0" aria-label="Resize provider health panel" aria-orientation="horizontal" aria-valuemin="70"></div>
 
           <!-- Risk Meters -->
-          <div class="card">
+          <div class="card right-pane" id="risk-pane">
             <div class="card-header"><span class="card-title" data-i18n="riskLimits">ЛИМИТЫ РИСКА</span><span class="tip-icon" data-tip-key="tipRisk">?</span></div>
             <div id="risk-container" class="risk-container"></div>
           </div>
+          <div class="rh rh-v pane-resizer" id="rh-risk" title="Drag or use arrow keys to resize" role="separator" tabindex="0" aria-label="Resize risk panel" aria-orientation="horizontal" aria-valuemin="90"></div>
 
           <!-- Exit Reason Stats -->
-          <div class="card">
+          <div class="card right-pane" id="exit-pane">
             <div class="card-header"><span class="card-title" data-i18n="exitBreakdown">ПРИЧИНЫ ВЫХОДА</span><span class="tip-icon" data-tip-key="tipExit">?</span></div>
             <div id="exit-stats" class="exit-stats"></div>
           </div>

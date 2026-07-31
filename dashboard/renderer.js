@@ -26,7 +26,8 @@ const TRANS = {
     openPositions: 'ОТКРЫТЫЕ ПОЗИЦИИ', tradeHistory: 'ИСТОРИЯ СДЕЛОК',
     cumulativePnl: 'НАКОПЛЕННАЯ П/У', exposureByCategory: 'ПОЗИЦИИ ПО КАТЕГОРИЯМ',
     riskLimits: 'ЛИМИТЫ РИСКА', exitBreakdown: 'ПРИЧИНЫ ВЫХОДА', liveLog: 'ЖУРНАЛ',
-    equityHistory: 'КАПИТАЛ, ПРОСАДКА И API', attentionTitle: 'ТРЕБУЕТ ВНИМАНИЯ',
+    portfolioHistory: 'ИСТОРИЯ ПОРТФЕЛЯ', historyEquity: 'Капитал',
+    historyDrawdown: 'Просадка', historyApi: 'API сегодня', attentionTitle: 'ТРЕБУЕТ ВНИМАНИЯ',
     providerHealth: 'AI-ПРОВАЙДЕРЫ', positionDetails: 'ДЕТАЛИ ПОЗИЦИИ',
     liveWarningTitle: 'LIVE: реальные денежные ордера',
     liveConfirm: 'Я понимаю, что бот будет размещать реальные ордера',
@@ -92,7 +93,8 @@ const TRANS = {
     openPositions: 'OPEN POSITIONS', tradeHistory: 'TRADE HISTORY',
     cumulativePnl: 'CUMULATIVE P&L', exposureByCategory: 'EXPOSURE BY CATEGORY',
     riskLimits: 'RISK LIMITS', exitBreakdown: 'EXIT BREAKDOWN', liveLog: 'LIVE LOG',
-    equityHistory: 'EQUITY, DRAWDOWN & API', attentionTitle: 'NEEDS ATTENTION',
+    portfolioHistory: 'PORTFOLIO HISTORY', historyEquity: 'Equity',
+    historyDrawdown: 'Drawdown', historyApi: 'API today', attentionTitle: 'NEEDS ATTENTION',
     providerHealth: 'AI PROVIDERS', positionDetails: 'POSITION DETAILS',
     liveWarningTitle: 'LIVE: real-money orders',
     liveConfirm: 'I understand that the bot will place real-money orders',
@@ -240,6 +242,7 @@ let logClearedAt = Date.now()   // hide everything before dashboard opened; rese
 let pnlChart = null
 let catChart = null
 let historyChart = null
+let historyMode = 'equity'
 let botRunning = false
 let lastAttentionSignature = ''
 
@@ -273,6 +276,7 @@ function parseTs(ts) {
 async function init() {
   _settings = (await api.readSettings()) || {}
   currentLang = getSetting('lang', 'ru')
+  historyMode = getSetting('history-mode', 'equity')
 
   const dataDir = await api.getDataDir()
   document.getElementById('data-dir-label').textContent = dataDir
@@ -281,6 +285,7 @@ async function init() {
   initTheme()
   initLang()
   initTooltips()
+  initHistoryControls()
   initCharts()
   await refresh()
 
@@ -292,7 +297,7 @@ async function init() {
     if (parseTs(line.timestamp) <= logClearedAt) return
     extraLogLines.push(line)
     if (extraLogLines.length > 500) extraLogLines.shift()
-    appendLogLine(line)
+    renderLog()
   })
   api.onBotStopped(({ code }) => {
     botRunning = false; updateBotStatusBadge()
@@ -745,26 +750,37 @@ function initCharts() {
 
   historyChart = new Chart($('history-chart').getContext('2d'), {
     type: 'line',
-    data: { labels: [], datasets: [
-      { label: 'Equity ($)', data: [], borderColor: '#10b981', borderWidth: 2, pointRadius: 0, tension: .2, yAxisID: 'y' },
-      { label: 'API cost ($)', data: [], borderColor: '#8b5cf6', borderWidth: 1.5, pointRadius: 0, tension: .2, yAxisID: 'yApi' },
-      { label: 'Drawdown (%)', data: [], borderColor: '#ef4444', borderWidth: 1.5, pointRadius: 0, tension: .2, yAxisID: 'yPct' },
-    ] },
+    data: { labels: [], datasets: [{ data: [], borderWidth: 2, pointRadius: 0, tension: .2, fill: true }] },
     options: {
       responsive: true, maintainAspectRatio: false, animation: false,
       interaction: { mode: 'index', intersect: false },
       plugins: {
-        legend: { display: true, labels: { color: '#7a8fa8', font: { family: 'monospace', size: 9 }, boxWidth: 10 } },
+        legend: { display: false },
         tooltip: { backgroundColor: '#141b2d', titleColor: '#d4dff0', bodyColor: '#7a8fa8', borderColor: '#1e2d45', borderWidth: 1 },
       },
       scales: {
         x: { ticks: { color: '#4a5f7a', font: { family: 'monospace', size: 9 }, maxTicksLimit: 8 }, grid: { color: 'rgba(30,45,69,0.5)' } },
-        y: { position: 'left', ticks: { color: '#4a5f7a', callback: value => `$${Number(value).toFixed(0)}` }, grid: { color: 'rgba(30,45,69,0.5)' } },
-        yApi: { position: 'right', ticks: { color: '#8b5cf6', callback: value => `$${Number(value).toFixed(0)}` }, grid: { drawOnChartArea: false } },
-        yPct: { position: 'right', offset: true, min: 0, ticks: { color: '#ef4444', callback: value => `${Number(value).toFixed(0)}%` }, grid: { drawOnChartArea: false } },
+        y: { ticks: { color: '#4a5f7a', font: { family: 'monospace', size: 9 } }, grid: { color: 'rgba(30,45,69,0.5)' } },
       },
     },
   })
+}
+
+function initHistoryControls() {
+  const buttons = [...document.querySelectorAll('[data-history-mode]')]
+  if (!buttons.some(button => button.dataset.historyMode === historyMode)) historyMode = 'equity'
+  const sync = () => buttons.forEach(button => {
+    const active = button.dataset.historyMode === historyMode
+    button.classList.toggle('active', active)
+    button.setAttribute('aria-pressed', String(active))
+  })
+  sync()
+  buttons.forEach(button => button.addEventListener('click', () => {
+    historyMode = button.dataset.historyMode
+    setSetting('history-mode', historyMode)
+    sync()
+    renderHistoryChart()
+  }))
 }
 
 function renderCharts() {
@@ -776,14 +792,33 @@ function renderCharts() {
 function renderHistoryChart() {
   if (!historyChart) return
   const points = equityHistory.slice(-500)
+  const series = DashboardModel.buildHistorySeries(points, historyMode)
   historyChart.data.labels = points.map(point => new Date(Number(point.timestamp) * 1000).toLocaleString(currentLang === 'ru' ? 'ru-RU' : 'en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }))
-  historyChart.data.datasets[0].data = points.map(point => Number(point.equity || 0))
-  historyChart.data.datasets[1].data = points.map(point => Number(point.total_api_cost || 0))
-  historyChart.data.datasets[2].data = points.map(point => Number(point.drawdown || 0) * 100)
+  const dataset = historyChart.data.datasets[0]
+  dataset.label = t(series.mode === 'api' ? 'historyApi' : `history${series.mode[0].toUpperCase()}${series.mode.slice(1)}`)
+  dataset.data = series.values
+  dataset.borderColor = series.color
+  dataset.backgroundColor = series.background
+  dataset.pointRadius = points.length < 20 ? 2 : 0
+  const scale = historyChart.options.scales.y
+  scale.beginAtZero = !!series.beginAtZero
+  scale.ticks.callback = value => `${series.prefix || ''}${Number(value).toFixed(series.decimals)}${series.suffix || ''}`
+  scale.suggestedMin = undefined
+  scale.suggestedMax = undefined
+  if (series.mode === 'equity' && series.values.length) {
+    const low = Math.min(...series.values), high = Math.max(...series.values)
+    const padding = Math.max((high - low) * .15, Math.abs(high) * .005, .05)
+    scale.suggestedMin = low - padding
+    scale.suggestedMax = high + padding
+  }
+  historyChart.options.plugins.tooltip.callbacks = {
+    label: context => ` ${dataset.label}: ${series.prefix || ''}${Number(context.parsed.y).toFixed(series.decimals)}${series.suffix || ''}`,
+  }
   historyChart.update('none')
   const last = points[points.length - 1]
+  const latest = series.values[series.values.length - 1]
   $('history-summary').textContent = last
-    ? `${currentLang === 'ru' ? 'Текущие' : 'Current'}: equity ${fmtUsd(Number(last.equity || 0))}, drawdown ${(Number(last.drawdown || 0) * 100).toFixed(1)}%, API ${fmtUsd(Number(last.total_api_cost || 0))}. ${points.length} ${currentLang === 'ru' ? 'точек' : 'points'}.`
+    ? `${dataset.label}: ${series.prefix || ''}${latest.toFixed(series.decimals)}${series.suffix || ''} · ${points.length} ${currentLang === 'ru' ? 'точек' : 'points'} · ${currentLang === 'ru' ? 'API всего' : 'API total'}: ${fmtUsd(Number(last.total_api_cost || 0))}`
     : (currentLang === 'ru' ? 'История появится после первого обновления portfolio.json.' : 'History starts after the first portfolio.json update.')
 }
 
@@ -905,7 +940,9 @@ function renderTrades() {
 function renderLog() {
   const container = $('log-container')
   const autoscroll = $('log-autoscroll').checked
-  const visible = logs.filter(l => parseTs(l.timestamp) > logClearedAt)
+  const visible = DashboardModel.dedupeLogs([...logs, ...extraLogLines])
+    .filter(l => parseTs(l.timestamp) > logClearedAt)
+    .sort((a, b) => parseTs(a.timestamp) - parseTs(b.timestamp))
   container.innerHTML = visible.slice(-200).map(formatLogLine).join('')
   if (autoscroll) container.scrollTop = container.scrollHeight
 }
@@ -937,7 +974,7 @@ function formatLogLine(entry) {
 async function exportLog() {
   // Only export what is currently visible — both sources filtered by logClearedAt
   const isVisible = l => parseTs(l.timestamp) > logClearedAt
-  const allLines = [...logs.filter(isVisible), ...extraLogLines.filter(isVisible)]
+  const allLines = DashboardModel.dedupeLogs([...logs.filter(isVisible), ...extraLogLines.filter(isVisible)])
     .sort((a, b) => parseTs(a.timestamp) - parseTs(b.timestamp))
     .map(l => `${l.timestamp}\t${(l.level||'').padEnd(8)}\t${l.message||''}`)
     .join('\n')
@@ -977,36 +1014,79 @@ function updateBotStatusBadge() {
 function setupResize() {
   const grid  = $('main-grid')
   const upper = $('right-upper')
+  const model = DashboardModel
 
   // Restore saved sizes
   const savedW = getSetting('panel-left-w', null)
-  if (savedW) grid.style.gridTemplateColumns = `${savedW}px 6px 1fr`
+  if (savedW) grid.style.gridTemplateColumns = `${model.clampPaneSize(savedW, 600, grid.clientWidth - 326)}px 6px 1fr`
   const savedH = getSetting('panel-upper-h', null)
-  if (savedH) upper.style.height = `${savedH}px`
+  if (savedH) upper.style.height = `${model.clampPaneSize(savedH, 180, $('right-col').clientHeight - 186)}px`
+
+  function bindPane(handleId, paneId, key, axis, min, max) {
+    const pane = $(paneId)
+    const property = axis === 'y' ? 'height' : 'width'
+    const measure = () => axis === 'y' ? pane.offsetHeight : pane.offsetWidth
+    let value = getSetting(key, null)
+    const resize = delta => {
+      value = model.clampPaneSize(measure() + delta, min, max())
+      pane.style[property] = `${value}px`
+    }
+    if (value !== null) {
+      value = model.clampPaneSize(value, min, max())
+      pane.style[property] = `${value}px`
+    }
+    dragResize($(handleId), axis === 'y', resize, () => setSetting(key, Math.round(measure())), measure)
+  }
+
+  bindPane('rh-positions', 'positions-pane', 'panel-positions-h', 'y', 100, () => Math.max(100, $('left-col').clientHeight - $('charts-pane').offsetHeight - $('history-pane').offsetHeight - 238))
+  bindPane('rh-charts-row', 'charts-pane', 'panel-charts-h', 'y', 120, () => Math.max(120, $('left-col').clientHeight - $('positions-pane').offsetHeight - $('history-pane').offsetHeight - 238))
+  bindPane('rh-history', 'history-pane', 'panel-history-h', 'y', 110, () => Math.max(110, $('left-col').clientHeight - $('positions-pane').offsetHeight - $('charts-pane').offsetHeight - 238))
+  bindPane('rh-attention', 'attention-pane', 'panel-attention-h', 'y', 70, () => 500)
+  bindPane('rh-providers', 'providers-pane', 'panel-providers-h', 'y', 70, () => 400)
+  bindPane('rh-risk', 'risk-pane', 'panel-risk-h', 'y', 90, () => 600)
 
   // Horizontal: left-col / right-col
   let lastW = null
   dragResize($('rh-main'), false,
     delta => {
-      lastW = Math.max(600, $('left-col').offsetWidth + delta)
+      lastW = model.clampPaneSize($('left-col').offsetWidth + delta, 600, grid.clientWidth - 326)
       grid.style.gridTemplateColumns = `${lastW}px 6px 1fr`
     },
-    () => { if (lastW !== null) setSetting('panel-left-w', lastW) }
+    () => { if (lastW !== null) setSetting('panel-left-w', lastW) },
+    () => $('left-col').offsetWidth
   )
+
+  let chartW = null
+  const charts = $('charts-pane')
+  dragResize($('rh-charts'), false,
+    delta => {
+      chartW = model.clampPaneSize($('pnl-pane').offsetWidth + delta, 220, charts.clientWidth - 226)
+      charts.style.gridTemplateColumns = `${chartW}px 6px 1fr`
+    },
+    () => { if (chartW !== null) setSetting('panel-chart-left-w', chartW) },
+    () => $('pnl-pane').offsetWidth
+  )
+  const savedChartW = getSetting('panel-chart-left-w', null)
+  if (savedChartW) {
+    chartW = model.clampPaneSize(savedChartW, 220, charts.clientWidth - 226)
+    charts.style.gridTemplateColumns = `${chartW}px 6px 1fr`
+  }
 
   // Vertical: right-upper / log
   let lastH = null
   dragResize($('rh-right'), true,
     delta => {
-      lastH = Math.max(80, upper.offsetHeight + delta)
+      lastH = model.clampPaneSize(upper.offsetHeight + delta, 180, $('right-col').clientHeight - 186)
       upper.style.height = `${lastH}px`
     },
-    () => { if (lastH !== null) setSetting('panel-upper-h', lastH) }
+    () => { if (lastH !== null) setSetting('panel-upper-h', lastH) },
+    () => upper.offsetHeight
   )
 }
 
-function dragResize(handle, vertical, onDelta, onDone) {
+function dragResize(handle, vertical, onDelta, onDone, getValue) {
   let active = false, last = 0
+  const updateAria = () => handle.setAttribute('aria-valuenow', String(Math.round(getValue())))
   handle.addEventListener('mousedown', e => {
     active = true; last = vertical ? e.clientY : e.clientX
     handle.classList.add('rh-active')
@@ -1017,7 +1097,7 @@ function dragResize(handle, vertical, onDelta, onDone) {
   document.addEventListener('mousemove', e => {
     if (!active) return
     const pos = vertical ? e.clientY : e.clientX
-    onDelta(pos - last); last = pos; handle.setAttribute('aria-valuenow', String(Math.round(vertical ? $('right-upper').offsetHeight : $('left-col').offsetWidth)))
+    onDelta(pos - last); last = pos; updateAria()
   })
   document.addEventListener('mouseup', () => {
     if (!active) return
@@ -1025,14 +1105,14 @@ function dragResize(handle, vertical, onDelta, onDone) {
     document.body.style.cursor = ''; document.body.style.userSelect = ''
     if (onDone) onDone()
   })
-  handle.setAttribute('aria-valuenow', String(Math.round(vertical ? $('right-upper').offsetHeight : $('left-col').offsetWidth)))
+  updateAria()
   handle.addEventListener('keydown', e => {
     const delta = vertical
       ? (e.key === 'ArrowDown' ? 20 : e.key === 'ArrowUp' ? -20 : 0)
       : (e.key === 'ArrowRight' ? 20 : e.key === 'ArrowLeft' ? -20 : 0)
     if (!delta) return
     e.preventDefault(); onDelta(delta)
-    handle.setAttribute('aria-valuenow', String(Math.round(vertical ? $('right-upper').offsetHeight : $('left-col').offsetWidth)))
+    updateAria()
     if (onDone) onDone()
   })
 }
@@ -1108,6 +1188,7 @@ const CONFIG_SCHEMA = [
     { key: 'resolution_retry_hours',         label: 'Resolution Retry (hours)',   ru: 'Повтор исхода (часы)',         type: 'number', step: 1 },
   ]},
   { section: 'ESTIMATION', ru: 'ОЦЕНКА', fields: [
+    { key: 'llm_cost_tracking_enabled', label: 'Track LLM Costs', ru: 'Отслеживать расходы LLM', type: 'bool' },
     { key: 'ensemble_size',        label: 'Ensemble Size',   ru: 'Размер ансамбля',  type: 'number', step: 1 },
     { key: 'ensemble_temperature', label: 'Temperature',     ru: 'Температура',      type: 'number', step: 0.1 },
     { key: 'max_estimate_tokens',  label: 'Max Tokens',      ru: 'Макс. токенов',    type: 'number', step: 64 },

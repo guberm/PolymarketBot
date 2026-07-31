@@ -8,7 +8,7 @@ from uuid import uuid4
 from config import BotConfig
 from models import Signal, Trade, Position, Side, TradeAction, ExitSignal, TopupCandidate
 from portfolio import Portfolio
-from runtime_safety import OrderFill, OrderJournal, parse_order_fill
+from runtime_safety import OrderFill, OrderJournal, TradingBlockedError, parse_order_fill
 
 log = logging.getLogger("bot.trader")
 
@@ -132,6 +132,16 @@ class LiveTrader:
             self.client.set_api_creds(self.client.create_or_derive_api_creds())
         self.journal = OrderJournal(config.data_dir)
         log.info("Live CLOB client initialized")
+
+    def _handle_order_post_failure(self, intent_id: str, exc: Exception, action: str) -> None:
+        status = getattr(exc, "status_code", None)
+        if isinstance(status, int) and 400 <= status < 500:
+            self.journal.complete(intent_id)
+            if status == 403:
+                raise TradingBlockedError(f"CLOB rejected {action} with HTTP 403: {exc}") from exc
+            log.error(f"CLOB rejected {action} with HTTP {status}: {exc}")
+            return
+        log.error(f"CLOB {action} outcome unknown; intent retained for recovery: {exc}")
 
     def confirm_applied_orders(self, portfolio: Portfolio) -> None:
         for record in self.journal.pending():
@@ -328,7 +338,7 @@ class LiveTrader:
             log.info(f"CLOB GTC order submitted: {order_id}")
 
         except Exception as e:
-            log.error(f"CLOB order failed: {e}")
+            self._handle_order_post_failure(intent_id, e, "BUY")
             return None
 
         fill = self._reconcile_order(order_id, resp, "BUY", price, size_usd)
@@ -468,7 +478,7 @@ class LiveTrader:
             self.journal.submitted(intent_id, order_id)
             log.info(f"CLOB SELL GTC order submitted: {order_id}")
         except Exception as e:
-            log.error(f"CLOB SELL order failed: {e}")
+            self._handle_order_post_failure(intent_id, e, "SELL")
             return None
 
         fill = self._reconcile_order(order_id, resp, "SELL", price, sell_shares, attempts=3, delay_seconds=2)
@@ -536,7 +546,7 @@ class LiveTrader:
             self.journal.submitted(buy_intent_id, buy_order_id)
             log.info(f"TOPUP BUY GTC order submitted: {buy_order_id}")
         except Exception as e:
-            log.error(f"TOPUP BUY order failed: {e}")
+            self._handle_order_post_failure(buy_intent_id, e, "TOPUP BUY")
             return None
 
         buy_fill = self._reconcile_order(buy_order_id, resp, "BUY", buy_price, buy_usd, attempts=3, delay_seconds=2)
@@ -585,7 +595,7 @@ class LiveTrader:
             self.journal.submitted(sell_intent_id, sell_order_id)
             log.info(f"TOPUP SELL GTC order submitted: {sell_order_id}")
         except Exception as e:
-            log.error(f"TOPUP SELL order failed (position now has {total_shares:.2f} tokens): {e}")
+            self._handle_order_post_failure(sell_intent_id, e, "TOPUP SELL")
             return None
 
         sell_fill = self._reconcile_order(sell_order_id, resp, "SELL", sell_price, total_shares, attempts=3, delay_seconds=2)

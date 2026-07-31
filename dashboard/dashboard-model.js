@@ -36,7 +36,7 @@ function buildAttention({ portfolio, pendingOrders = [], logs = [], config = {},
 
   const dailyCost = Number(portfolio?.daily_api_cost || 0)
   const dailyBudget = Number(config.max_daily_api_cost_usd || 0)
-  if (dailyBudget > 0 && dailyCost >= dailyBudget * .8)
+  if (config.llm_cost_tracking_enabled !== false && dailyBudget > 0 && dailyCost >= dailyBudget * .8)
     items.push({ code: 'api_budget', severity: dailyCost >= dailyBudget ? 'critical' : 'warning', title: 'API budget nearly exhausted', detail: `$${dailyCost.toFixed(2)} of $${dailyBudget.toFixed(2)} used today.` })
 
   const recent = logs.filter(log => now - asTime(log.timestamp) <= 60 * 60 * 1000)
@@ -133,6 +133,58 @@ function buildHistoryPoint(portfolio) {
   }
 }
 
-const dashboardModel = { buildAttention, buildProviderHealth, buildHistoryPoint }
+function buildHistorySeries(points = [], requestedMode = 'equity') {
+  const modes = {
+    equity: { label: 'Equity ($)', color: '#10b981', background: 'rgba(16,185,129,.10)', decimals: 2, prefix: '$', value: point => Number(point.equity || 0) },
+    drawdown: { label: 'Drawdown (%)', color: '#ef4444', background: 'rgba(239,68,68,.10)', decimals: 1, suffix: '%', beginAtZero: true, value: point => Number((Number(point.drawdown || 0) * 100).toFixed(6)) },
+    api: { label: 'API today ($)', color: '#8b5cf6', background: 'rgba(139,92,246,.10)', decimals: 3, prefix: '$', beginAtZero: true, value: point => Number(point.daily_api_cost || 0) },
+  }
+  const mode = modes[requestedMode] ? requestedMode : 'equity'
+  const config = modes[mode]
+  return { mode, ...config, values: points.map(config.value) }
+}
+
+function clampPaneSize(value, min, max) {
+  min = Number(min)
+  max = Math.max(min, Number(max))
+  value = Number(value)
+  return Number.isFinite(value) ? Math.min(max, Math.max(min, value)) : min
+}
+
+function parseProcessLogChunk(buffer = '', chunk = '', fallbackLevel = 'INFO', fallbackTimestamp = new Date().toISOString()) {
+  const lines = (buffer + String(chunk)).split(/\r?\n/)
+  const remaining = lines.pop() || ''
+  const entries = lines.filter(line => line.trim()).map(line => {
+    try {
+      const parsed = JSON.parse(line)
+      if (parsed && typeof parsed === 'object' && parsed.message !== undefined)
+        return { timestamp: parsed.timestamp || fallbackTimestamp, level: parsed.level || fallbackLevel, message: String(parsed.message) }
+    } catch {}
+    const consoleLine = line.match(/^\[(\d{2}):(\d{2}):(\d{2})\]\s+(trce|dbug|info|warn|fail|crit):\s+\S+\[\d+\]\s+(.*)$/i)
+    if (consoleLine) {
+      const timestamp = new Date(fallbackTimestamp)
+      timestamp.setHours(Number(consoleLine[1]), Number(consoleLine[2]), Number(consoleLine[3]), 0)
+      const levels = { trce: 'TRACE', dbug: 'DEBUG', info: 'INFORMATION', warn: 'WARNING', fail: 'ERROR', crit: 'CRITICAL' }
+      return { timestamp: timestamp.toISOString(), level: levels[consoleLine[4].toLowerCase()], message: consoleLine[5].trim() }
+    }
+    return { timestamp: fallbackTimestamp, level: fallbackLevel, message: line.trim() }
+  })
+  return { entries, remaining }
+}
+
+function dedupeLogs(entries = []) {
+  const seen = new Map()
+  return entries.filter(entry => {
+    const key = `${entry.level || ''}\u0000${entry.message || ''}`
+    const timestamp = asTime(entry.timestamp)
+    const prior = seen.get(key) || []
+    if (prior.some(value => timestamp && value ? Math.abs(timestamp - value) <= 2000 : timestamp === value)) return false
+    prior.push(timestamp)
+    seen.set(key, prior)
+    return true
+  })
+}
+
+const dashboardModel = { buildAttention, buildProviderHealth, buildHistoryPoint, buildHistorySeries, clampPaneSize, parseProcessLogChunk, dedupeLogs }
 if (typeof module !== 'undefined') module.exports = dashboardModel
 if (typeof window !== 'undefined') window.DashboardModel = dashboardModel
