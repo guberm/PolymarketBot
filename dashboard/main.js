@@ -1,5 +1,5 @@
 'use strict'
-const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron')
+const { app, BrowserWindow, ipcMain, dialog, shell, clipboard } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const { spawn } = require('child_process')
@@ -359,6 +359,11 @@ function setupIPC() {
 
   ipcMain.handle('open-logs-dir', () => {
     shell.openPath(dataDir)
+  })
+
+  ipcMain.handle('copy-text', (_, text) => {
+    clipboard.writeText(String(text ?? ''))
+    return true
   })
 
   // ── UI settings (persisted to file) ──────────────────────────────────

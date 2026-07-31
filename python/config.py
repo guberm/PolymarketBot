@@ -171,8 +171,8 @@ class BotConfig:
     # Polymarket endpoints
     gamma_api_host: str = ""
     clob_host: str = ""
-    exchange_address: str = ""
-    neg_risk_exchange_address: str = ""
+    exchange_address: str = "0xE111180000d2663C0091e4f400237545B87B996B"
+    neg_risk_exchange_address: str = "0xe2222d279d744050d28e00520010520000310F59"
 
     # Email notifications
     email_enabled: bool = False
@@ -294,8 +294,8 @@ class BotConfig:
             polymarket_api_passphrase=get("polymarket_api_passphrase", ""),
             gamma_api_host=get("gamma_api_host", ""),
             clob_host=get("clob_host", ""),
-            exchange_address=get("exchange_address", ""),
-            neg_risk_exchange_address=get("neg_risk_exchange_address", ""),
+            exchange_address=get("exchange_address", "0xE111180000d2663C0091e4f400237545B87B996B"),
+            neg_risk_exchange_address=get("neg_risk_exchange_address", "0xe2222d279d744050d28e00520010520000310F59"),
             email_enabled=get("email_enabled", False),
             email_smtp_host=get("email_smtp_host", ""),
             email_smtp_port=get("email_smtp_port", 587),

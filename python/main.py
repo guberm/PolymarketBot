@@ -761,9 +761,9 @@ def main():
                 if config.llm_cost_tracking_enabled:
                     portfolio.record_api_cost_usd(estimator.last_api_cost_usd)
                 if estimate is None:
-                    log.info(f"  [{i}/{len(eligible)}] SKIP (estimation failed)")
+                    log.info(f"  [{i}/{len(eligible)}] SKIP (no usable estimate)")
                     if con:
-                        print(f"[{ts()}]   [{i:>2}/{len(eligible)}] -> {RED}FAILED{RESET}")
+                        print(f"[{ts()}]   [{i:>2}/{len(eligible)}] -> {YELLOW}SKIP (no usable estimate){RESET}")
                     continue
                 evaluated_markets.append(market)
 

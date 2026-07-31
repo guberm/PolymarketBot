@@ -191,6 +191,40 @@ TradingSafety.HandleDefinitiveRejection(rejectedJournal, badRequestIntent,
 if (rejectedJournal.Pending().Count != 0) throw new Exception("Definitive 400 intent was not removed");
 Directory.Delete(rejectedJournalDir, true);
 
+var clobCapture = new ClobV2CaptureHandler();
+using (var clobHttp = new HttpClient(clobCapture))
+{
+    var clob = new ClobApiClient(new BotConfig
+    {
+        ClobHost = "https://clob.test",
+        PolymarketPrivateKey = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
+        PolymarketChainId = 137,
+        PolymarketSignatureType = 1,
+        PolymarketApiKey = "owner",
+        PolymarketApiSecret = "dGVzdA==",
+        PolymarketApiPassphrase = "pass",
+        ExchangeAddress = "0xE111180000d2663C0091e4f400237545B87B996B",
+        NegRiskExchangeAddress = "0xe2222d279d744050d28e00520010520000310F59",
+    }, clobHttp, loggerFactory.CreateLogger<ClobApiClient>());
+    if (await clob.PostMarketBuyOrderAsync("1234", 3, .5, CancellationToken.None) is null)
+        throw new Exception("V2 order request was not posted");
+}
+using (var body = JsonDocument.Parse(clobCapture.OrderBody ?? throw new Exception("Order body was not captured")))
+{
+    var order = body.RootElement.GetProperty("order");
+    foreach (var field in new[] { "timestamp", "metadata", "builder" })
+        if (!order.TryGetProperty(field, out _)) throw new Exception($"V2 order field missing: {field}");
+    foreach (var legacy in new[] { "taker", "nonce", "feeRateBps" })
+        if (order.TryGetProperty(legacy, out _)) throw new Exception($"Legacy V1 order field remains: {legacy}");
+    if (!body.RootElement.TryGetProperty("postOnly", out var postOnly) || postOnly.GetBoolean())
+        throw new Exception("V2 postOnly=false missing");
+    if (!body.RootElement.TryGetProperty("deferExec", out var deferExec) || deferExec.GetBoolean())
+        throw new Exception("V2 deferExec=false missing");
+    var signature = order.GetProperty("signature").GetString() ?? "";
+    if (signature.Length != 132)
+        throw new Exception("V2 POLY_PROXY signature is not a 65-byte EIP-712 signature");
+}
+
 var invalidJsonConfig = new BotConfig
 {
     AiProvider = "openai",
@@ -283,6 +317,29 @@ sealed class StaticResponseHandler(string body) : HttpMessageHandler
 {
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(body) });
+}
+
+sealed class ClobV2CaptureHandler : HttpMessageHandler
+{
+    public string? OrderBody { get; private set; }
+
+    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        var path = request.RequestUri!.AbsolutePath;
+        if (path == "/tick-size") return Json("{\"minimum_tick_size\":\"0.01\"}");
+        if (path == "/neg-risk") return Json("{\"neg_risk\":false}");
+        if (path == "/order")
+        {
+            OrderBody = await request.Content!.ReadAsStringAsync(cancellationToken);
+            return Json("{\"orderID\":\"order-v2\",\"status\":\"live\"}");
+        }
+        return new HttpResponseMessage(HttpStatusCode.NotFound);
+    }
+
+    private static HttpResponseMessage Json(string body) => new(HttpStatusCode.OK)
+    {
+        Content = new StringContent(body, System.Text.Encoding.UTF8, "application/json")
+    };
 }
 
 sealed class ConcurrentResponseHandler : HttpMessageHandler

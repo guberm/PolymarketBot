@@ -1,6 +1,7 @@
 'use strict'
 const assert = require('assert')
-const { buildAttention, buildProviderHealth, buildHistoryPoint, buildHistorySeries, clampPaneSize, parseProcessLogChunk, dedupeLogs } = require('./dashboard-model')
+const fs = require('fs')
+const { buildAttention, buildProviderHealth, buildHistoryPoint, buildHistorySeries, clampPaneSize, parseProcessLogChunk, dedupeLogs, formatLogText } = require('./dashboard-model')
 
 const now = Date.parse('2026-07-31T20:00:00Z')
 const portfolio = {
@@ -69,4 +70,13 @@ assert.strictEqual(dedupeLogs([
   consoleChunk.entries[0],
   { timestamp: '2026-07-31T20:00:01Z', level: 'INFORMATION', message: 'Cycle 1 complete' },
 ]).length, 1)
+const bomChunk = parseProcessLogChunk('', '\ufeff{"timestamp":"2026-07-31T20:00:00Z","level":"ERROR","message":"blocked"}\n', 'INFO', 'fallback')
+assert.deepStrictEqual(bomChunk.entries, chunk.entries)
+assert.strictEqual(formatLogText([
+  { timestamp: '2026-07-31T20:00:00Z', level: 'INFO', message: '\u001b[31mfailed\u001b[0m' },
+  { timestamp: '2026-07-31T20:00:01Z', level: 'INFORMATION', message: '  failed  ' },
+]), '2026-07-31T20:00:00Z\tINFO    \tfailed')
+assert(fs.readFileSync(require.resolve('./renderer.js'), 'utf8').includes('api.copyText(text)'))
+assert(fs.readFileSync(require.resolve('./preload.js'), 'utf8').includes("copyText:"))
+assert(fs.readFileSync(require.resolve('./main.js'), 'utf8').includes("ipcMain.handle('copy-text'"))
 console.log('dashboard model self-checks passed')

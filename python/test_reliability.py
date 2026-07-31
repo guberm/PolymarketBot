@@ -250,6 +250,28 @@ class ReliabilityTests(unittest.TestCase):
             trader._handle_order_post_failure(uncertain_id, RuntimeError("connection reset"), "BUY")
             self.assertEqual(trader.journal.pending()[0]["intent_id"], uncertain_id)
 
+    def test_live_trader_builds_v2_orders(self):
+        from py_clob_client_v2 import CreateOrderOptions, OrderArgs, Side as ClobSide
+
+        with tempfile.TemporaryDirectory() as directory:
+            trader = LiveTrader(BotConfig(
+                clob_host="https://clob.test",
+                polymarket_private_key="0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
+                polymarket_chain_id=137,
+                polymarket_signature_type=0,
+                polymarket_api_key="owner",
+                polymarket_api_secret="dGVzdA==",
+                polymarket_api_passphrase="pass",
+                data_dir=directory,
+            ))
+            order = trader.client.builder.build_order(
+                OrderArgs(token_id="1234", price=.5, size=6, side=ClobSide.BUY),
+                CreateOrderOptions(tick_size="0.01", neg_risk=False),
+            )
+            self.assertTrue(order.timestamp)
+            self.assertEqual(order.metadata, "0x" + "0" * 64)
+            self.assertEqual(order.builder, "0x" + "0" * 64)
+
 
 if __name__ == "__main__":
     unittest.main()
