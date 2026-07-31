@@ -11,4 +11,7 @@ public sealed class Estimate
     public double Timestamp { get; init; } = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0;
     public int InputTokensUsed { get; init; }
     public int OutputTokensUsed { get; init; }
+    public double ApiCostUsd { get; set; }
+    public double DurationSeconds { get; set; }
+    public Dictionary<string, double> ProviderEstimates { get; init; } = [];
 }

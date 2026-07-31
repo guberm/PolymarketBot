@@ -25,6 +25,13 @@ public sealed class BotConfig
     public int MarketsPerCycle { get; init; } = 15;
     public double MaxSpread { get; init; } = 0.04;
 
+    // Optional read-only Kalshi comparison
+    public bool KalshiShadowEnabled { get; init; } = false;
+    public string KalshiApiHost { get; init; } = "https://api.elections.kalshi.com/trade-api/v2";
+    public int KalshiMarketsLimit { get; init; } = 200;
+    public double KalshiMinMatchScore { get; init; } = 0.55;
+    public double KalshiLlmSameThreshold { get; init; } = 0.90;
+
     // AI provider
     public string AiProvider { get; init; } = "anthropic";   // selected provider for single-provider mode
     public bool MultiProvider { get; init; } = false;        // True = query ALL configured providers and aggregate
@@ -64,12 +71,22 @@ public sealed class BotConfig
     public double MaxEstimateStd { get; init; } = 0.10;
     public double MaxCycleApiCostUsd { get; init; } = 1.00;
     public double MaxDailyApiCostUsd { get; init; } = 10.00;
+    public string ApiPricing { get; init; } = "anthropic=3/15,openai=5/15,gemini=0.10/0.40,openrouter=3/15,azure_openai=5/15";
+    public bool CalibrationWeightingEnabled { get; init; } = false;
+    public int CalibrationMinSamples { get; init; } = 40;
+    public double CalibrationShrinkage { get; init; } = 0.50;
+    public double CalibrationMaxProviderWeight { get; init; } = 0.60;
 
     // Sizing
     public double KellyFraction { get; init; } = 0.15;
     public double MinEdge { get; init; } = 0.12;
     public double MinTradeUsd { get; init; } = 0.5;
     public double EntryPriceBuffer { get; init; } = 0.02;
+    public double MaxQuoteAgeSeconds { get; init; } = 15.0;
+    public int QuoteFailureGraceCycles { get; init; } = 3;
+    public double StaleQuoteHaircutPct { get; init; } = 0.25;
+    public int ResolutionChecksPerCycle { get; init; } = 20;
+    public double ResolutionRetryHours { get; init; } = 6.0;
     public double MaxLiveOrderBankrollPct { get; init; } = 0.25;
     public bool AllowUnsafeRisk { get; init; } = false;
 
@@ -77,6 +94,7 @@ public sealed class BotConfig
     public double MaxPositionPct { get; set; } = 0.15;
     public double MaxTotalExposurePct { get; set; } = 1.00;
     public double MaxCategoryExposurePct { get; set; } = 0.80;
+    public double MaxEventExposurePct { get; set; } = 0.30;
     public double DailyStopLossPct { get; set; } = 0.20;
     public double MaxDrawdownPct { get; set; } = 0.50;
     public int MaxConcurrentPositions { get; set; } = 8;
@@ -159,6 +177,11 @@ public sealed class BotConfig
             MinMarketPrice = double.Parse(Cfg("min_market_price", "MIN_MARKET_PRICE", "0.10")),
             MarketsPerCycle = int.Parse(Cfg("markets_per_cycle", "MARKETS_PER_CYCLE", "15")),
             MaxSpread = double.Parse(Cfg("max_spread", "MAX_SPREAD", "0.04")),
+            KalshiShadowEnabled = Cfg("kalshi_shadow_enabled", "KALSHI_SHADOW_ENABLED", "false").Equals("true", StringComparison.OrdinalIgnoreCase),
+            KalshiApiHost = Cfg("kalshi_api_host", "KALSHI_API_HOST", "https://api.elections.kalshi.com/trade-api/v2"),
+            KalshiMarketsLimit = int.Parse(Cfg("kalshi_markets_limit", "KALSHI_MARKETS_LIMIT", "200")),
+            KalshiMinMatchScore = double.Parse(Cfg("kalshi_min_match_score", "KALSHI_MIN_MATCH_SCORE", "0.55")),
+            KalshiLlmSameThreshold = double.Parse(Cfg("kalshi_llm_same_threshold", "KALSHI_LLM_SAME_THRESHOLD", "0.90")),
             AiProvider = Cfg("ai_provider", "AI_PROVIDER", "anthropic"),
             MultiProvider = Cfg("multi_provider", "MULTI_PROVIDER", "false").Equals("true", StringComparison.OrdinalIgnoreCase),
             AnthropicEnabled = Cfg("anthropic_enabled", "ANTHROPIC_ENABLED", "true").Equals("true", StringComparison.OrdinalIgnoreCase),
@@ -188,15 +211,26 @@ public sealed class BotConfig
             MaxEstimateStd = double.Parse(Cfg("max_estimate_std", "MAX_ESTIMATE_STD", "0.10")),
             MaxCycleApiCostUsd = double.Parse(Cfg("max_cycle_api_cost_usd", "MAX_CYCLE_API_COST_USD", "1.00")),
             MaxDailyApiCostUsd = double.Parse(Cfg("max_daily_api_cost_usd", "MAX_DAILY_API_COST_USD", "10.00")),
+            ApiPricing = Cfg("api_pricing", "API_PRICING", "anthropic=3/15,openai=5/15,gemini=0.10/0.40,openrouter=3/15,azure_openai=5/15"),
+            CalibrationWeightingEnabled = Cfg("calibration_weighting_enabled", "CALIBRATION_WEIGHTING_ENABLED", "false").Equals("true", StringComparison.OrdinalIgnoreCase),
+            CalibrationMinSamples = int.Parse(Cfg("calibration_min_samples", "CALIBRATION_MIN_SAMPLES", "40")),
+            CalibrationShrinkage = double.Parse(Cfg("calibration_shrinkage", "CALIBRATION_SHRINKAGE", "0.50")),
+            CalibrationMaxProviderWeight = double.Parse(Cfg("calibration_max_provider_weight", "CALIBRATION_MAX_PROVIDER_WEIGHT", "0.60")),
             KellyFraction = double.Parse(Cfg("kelly_fraction", "KELLY_FRACTION", "0.15")),
             MinEdge = double.Parse(Cfg("min_edge", "MIN_EDGE", "0.12")),
             MinTradeUsd = double.Parse(Cfg("min_trade_usd", "MIN_TRADE_USD", "0.5")),
             EntryPriceBuffer = double.Parse(Cfg("entry_price_buffer", "ENTRY_PRICE_BUFFER", "0.02")),
+            MaxQuoteAgeSeconds = double.Parse(Cfg("max_quote_age_seconds", "MAX_QUOTE_AGE_SECONDS", "15")),
+            QuoteFailureGraceCycles = int.Parse(Cfg("quote_failure_grace_cycles", "QUOTE_FAILURE_GRACE_CYCLES", "3")),
+            StaleQuoteHaircutPct = double.Parse(Cfg("stale_quote_haircut_pct", "STALE_QUOTE_HAIRCUT_PCT", "0.25")),
+            ResolutionChecksPerCycle = int.Parse(Cfg("resolution_checks_per_cycle", "RESOLUTION_CHECKS_PER_CYCLE", "20")),
+            ResolutionRetryHours = double.Parse(Cfg("resolution_retry_hours", "RESOLUTION_RETRY_HOURS", "6")),
             MaxLiveOrderBankrollPct = double.Parse(Cfg("max_live_order_bankroll_pct", "MAX_LIVE_ORDER_BANKROLL_PCT", "0.25")),
             AllowUnsafeRisk = Cfg("allow_unsafe_risk", "ALLOW_UNSAFE_RISK", "false").Equals("true", StringComparison.OrdinalIgnoreCase),
             MaxPositionPct = double.Parse(Cfg("max_position_pct", "MAX_POSITION_PCT", "0.15")),
             MaxTotalExposurePct = double.Parse(Cfg("max_total_exposure_pct", "MAX_TOTAL_EXPOSURE_PCT", "1.00")),
             MaxCategoryExposurePct = double.Parse(Cfg("max_category_exposure_pct", "MAX_CATEGORY_EXPOSURE_PCT", "0.80")),
+            MaxEventExposurePct = double.Parse(Cfg("max_event_exposure_pct", "MAX_EVENT_EXPOSURE_PCT", "0.30")),
             DailyStopLossPct = double.Parse(Cfg("daily_stop_loss_pct", "DAILY_STOP_LOSS_PCT", "0.20")),
             MaxDrawdownPct = double.Parse(Cfg("max_drawdown_pct", "MAX_DRAWDOWN_PCT", "0.50")),
             MaxConcurrentPositions = int.Parse(Cfg("max_concurrent_positions", "MAX_CONCURRENT_POSITIONS", "8")),

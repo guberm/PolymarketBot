@@ -184,11 +184,11 @@ public sealed class ClobApiClient
         _log.LogDebug("Order metadata: tickSize={Tick}, negRisk={NegRisk}, decimals={Dec}",
             tickSize, negRisk, decimals);
 
-        // 2. Round price to tick size, then add 2 ticks of aggression so the
-        //    buy order crosses the spread and fills immediately (taker order).
-        //    Edge is >>8% so paying 2 extra ticks (~1-2¢) is negligible.
+        // 2. The caller already walked the ask book. Round the exact worst
+        //    acceptable level up to a valid tick without adding hidden slippage.
         double tickSizeD = double.Parse(tickSize, System.Globalization.CultureInfo.InvariantCulture);
-        double roundedPrice = Math.Round(price + 2 * tickSizeD, decimals);
+        double roundedPrice = Math.Ceiling(price / tickSizeD - 1e-9) * tickSizeD;
+        roundedPrice = Math.Round(roundedPrice, decimals);
         roundedPrice = Math.Min(roundedPrice, 1.0 - tickSizeD); // never exceed (1 - tick)
 
         // 3. Calculate amounts (6-decimal USDC units)
@@ -340,9 +340,9 @@ public sealed class ClobApiClient
 
         double tickSizeD = double.Parse(tickSize, CultureInfo.InvariantCulture);
 
-        // Subtract 2 ticks so the SELL crosses the spread and fills as a taker order.
-        // Mirrors the +2 tick aggression used for BUY orders.
-        double roundedPrice = Math.Round(price - 2 * tickSizeD, decimals);
+        // The caller already walked the bid book; use its worst acceptable level.
+        double roundedPrice = Math.Floor(price / tickSizeD + 1e-9) * tickSizeD;
+        roundedPrice = Math.Round(roundedPrice, decimals);
         roundedPrice = Math.Max(roundedPrice, tickSizeD); // never go below 1 tick
 
         // Safety net: price below tick size rounds to 0 → can't create valid order
@@ -472,10 +472,9 @@ public sealed class ClobApiClient
 
     // ── Order status & cancel ──────────────────────────────────────
 
-    /// <summary>
-    /// Check GTC order status. Returns "MATCHED", "LIVE", "CANCELLED", etc. or null on error.
-    /// </summary>
-    public async Task<string?> GetOrderStatusAsync(string orderId, CancellationToken ct)
+    /// <summary>Read order status together with its final or partial matched amount.</summary>
+    public async Task<OrderFill?> GetOrderFillAsync(
+        string orderId, string side, double fallbackPrice, CancellationToken ct)
     {
         try
         {
@@ -492,10 +491,10 @@ public sealed class ClobApiClient
                 return null;
             }
 
-            var doc = JsonDocument.Parse(respText);
-            var status = doc.RootElement.TryGetProperty("status", out var s) ? s.GetString() : null;
-            _log.LogDebug("Order {OrderId} status: {Status}", orderId[..12], status);
-            return status;
+            var fill = OrderReconciliation.Parse(respText, side, fallbackPrice);
+            _log.LogDebug("Order {OrderId} status: {Status}, filled={Shares:F4}",
+                orderId[..Math.Min(12, orderId.Length)], fill.Status, fill.Shares);
+            return fill;
         }
         catch (Exception ex)
         {

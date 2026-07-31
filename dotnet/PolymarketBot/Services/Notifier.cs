@@ -132,6 +132,8 @@ public sealed class Notifier
                 Section("Risk limits",
                     Row("Max position",    $"{c.MaxPositionPct:P0}"),
                     Row("Max exposure",    $"{c.MaxTotalExposurePct:P0}"),
+                    Row("Max category",    $"{c.MaxCategoryExposurePct:P0}"),
+                    Row("Max event",       $"{c.MaxEventExposurePct:P0}"),
                     Row("Daily stop-loss", $"{c.DailyStopLossPct:P0}"),
                     Row("Max drawdown",    $"{c.MaxDrawdownPct:P0}"),
                     Row("Max positions",   c.MaxConcurrentPositions.ToString()),
@@ -254,7 +256,7 @@ public sealed class Notifier
     public void NotifyDailyReset(Portfolio portfolio)
     {
         var t = Now();
-        var pv = portfolio.Bankroll + portfolio.TotalExposure();
+        var pv = portfolio.Equity();
         var html = BuildHtml("🌅", "New Trading Day", ColDaily,
             new[] { Section("Daily Reset",
                 Row("Portfolio value", $"${pv:F2}"),
@@ -323,7 +325,7 @@ public sealed class Notifier
     public void NotifyStopped(Portfolio portfolio)
     {
         var t = Now();
-        var pv = portfolio.Bankroll + portfolio.TotalExposure();
+        var pv = portfolio.Equity();
         var pnl = portfolio.TotalRealizedPnl;
         var html = BuildHtml("🛑", "Bot Stopped", ColStopped,
             new[] { Section("Final Summary",
@@ -351,7 +353,7 @@ public sealed class Notifier
 
     private static EmailSection PortfolioSection(Portfolio portfolio)
     {
-        var pv = portfolio.Bankroll + portfolio.TotalExposure();
+        var pv = portfolio.Equity();
         var pnl = portfolio.TotalRealizedPnl;
         return Section("Portfolio After",
             Row("Portfolio value", $"${pv:F2}"),

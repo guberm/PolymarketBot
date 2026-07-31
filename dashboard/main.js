@@ -3,6 +3,8 @@ const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const { spawn } = require('child_process')
+const { readLastLines } = require('./tail-lines')
+const { buildHistoryPoint } = require('./dashboard-model')
 
 // ── State ─────────────────────────────────────────────────────────────────
 let mainWindow = null
@@ -43,6 +45,8 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: true,
+      spellcheck: false,
     },
     title: 'Polymarket Bot Dashboard',
     backgroundColor: '#0a0e1a',
@@ -51,6 +55,11 @@ function createWindow() {
     autoHideMenuBar: true,
   })
   mainWindow.loadFile(path.join(__dirname, 'index.html'))
+  mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    if (!url.startsWith('file:')) event.preventDefault()
+  })
+  mainWindow.webContents.session.setPermissionRequestHandler((_, __, callback) => callback(false))
   mainWindow.once('ready-to-show', () => mainWindow.show())
   mainWindow.on('closed', () => { mainWindow = null })
 }
@@ -61,7 +70,7 @@ function setupFileWatcher() {
   Object.values(watchers).forEach(w => { try { w.close() } catch {} })
   watchers = {}
 
-  for (const file of ['portfolio.json', 'trades.jsonl', 'bot.log']) {
+  for (const file of ['portfolio.json', 'trades.jsonl', 'bot.log', 'estimates.jsonl', 'pending-orders.json']) {
     const full = path.join(dataDir, file)
     const dir = path.dirname(full)
     if (!fs.existsSync(dir)) continue
@@ -87,9 +96,18 @@ function readJson(file) {
 
 function readLines(file, n) {
   try {
-    const lines = fs.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean)
-    return lines.slice(-n).map(l => { try { return JSON.parse(l) } catch { return { level: 'INFO', message: l, timestamp: new Date().toISOString() } } })
+    return readLastLines(file, n).map(l => { try { return JSON.parse(l) } catch { return { level: 'INFO', message: l, timestamp: new Date().toISOString() } } })
   } catch { return [] }
+}
+
+function recordHistory(portfolio) {
+  const point = buildHistoryPoint(portfolio)
+  if (!point) return
+  const file = path.join(dataDir, 'dashboard-history.jsonl')
+  const last = fs.existsSync(file) ? readLines(file, 1)[0] : null
+  if (Number(last?.timestamp) === point.timestamp) return
+  fs.mkdirSync(dataDir, { recursive: true })
+  fs.appendFileSync(file, JSON.stringify(point) + '\n', 'utf8')
 }
 
 // ── IPC ───────────────────────────────────────────────────────────────────
@@ -118,7 +136,9 @@ function setupIPC() {
   ipcMain.handle('read-portfolio', () => {
     const f = path.join(dataDir, 'portfolio.json')
     if (!fs.existsSync(f)) return null
-    return readJson(f)
+    const value = readJson(f)
+    if (value) recordHistory(value)
+    return value
   })
 
   ipcMain.handle('read-trades', () => {
@@ -131,6 +151,22 @@ function setupIPC() {
     const f = path.join(dataDir, 'bot.log')
     if (!fs.existsSync(f)) return []
     return readLines(f, n)
+  })
+
+  ipcMain.handle('read-estimates', () => {
+    const f = path.join(dataDir, 'estimates.jsonl')
+    return fs.existsSync(f) ? readLines(f, 2000) : []
+  })
+
+  ipcMain.handle('read-pending-orders', () => {
+    const f = path.join(dataDir, 'pending-orders.json')
+    const value = fs.existsSync(f) ? readJson(f) : null
+    return value && typeof value === 'object' && !Array.isArray(value) ? Object.values(value) : []
+  })
+
+  ipcMain.handle('read-equity-history', () => {
+    const f = path.join(dataDir, 'dashboard-history.jsonl')
+    return fs.existsSync(f) ? readLines(f, 2000) : []
   })
 
   // ── Config ───────────────────────────────────────────────────────────

@@ -4,7 +4,7 @@ Supported providers: anthropic, openai, gemini, openrouter, azure_openai
 
 Multi-provider mode (multi_provider=true):
   Queries every provider that has an API key configured, scores each by
-  conviction × confidence, and returns the trimmed mean across all providers.
+  stability, then returns an equal or calibration-gated weighted provider mean.
   Per-provider model fields: anthropic_model, openai_model, gemini_model, openrouter_model
 """
 
@@ -12,7 +12,10 @@ import json
 import logging
 import math
 import statistics
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Optional
 
 import requests
@@ -23,7 +26,10 @@ except ImportError:
     _anthropic = None  # type: ignore[assignment]
 
 from config import BotConfig
+from api_pricing import calculate_api_cost
+from calibration import calibration_weights, load_provider_stats
 from models import MarketInfo, Estimate
+from runtime_safety import retry_delay_seconds
 
 log = logging.getLogger("bot.estimator")
 
@@ -57,6 +63,11 @@ class Estimator:
     def __init__(self, config: BotConfig):
         self.config = config
         self._provider = config.ai_provider.lower()
+        self.last_api_cost_usd = 0.0
+        self._rate_limited_this_cycle: set[str] = set()
+        self._rate_limit_lock = threading.Lock()
+        self._calibration_stats = {}
+        self._refresh_calibration()
 
         # Initialize Anthropic client whenever the key is present (single + multi-provider)
         if config.anthropic_api_key and _anthropic is not None:
@@ -69,11 +80,52 @@ class Estimator:
 
     # ── Public API ─────────────────────────────────────────────────────────
 
+    def reset_cycle(self) -> None:
+        with self._rate_limit_lock:
+            self._rate_limited_this_cycle.clear()
+        self._refresh_calibration()
+
+    def _refresh_calibration(self) -> None:
+        self._calibration_stats = (
+            load_provider_stats(Path(self.config.data_dir) / "estimates.jsonl")
+            if self.config.calibration_weighting_enabled else {}
+        )
+
     def estimate(self, market: MarketInfo) -> Optional[Estimate]:
         """Run estimation. Uses multi-provider mode if configured."""
-        if self.config.multi_provider:
-            return self._estimate_multi(market)
-        return self._estimate_single(market)
+        started = time.monotonic()
+        self.last_api_cost_usd = 0.0
+        result = self._estimate_multi(market) if self.config.multi_provider else self._estimate_single(market)
+        if result is not None:
+            result.duration_seconds = time.monotonic() - started
+        return result
+
+    def verify_market_equivalence(self, market: MarketInfo, kalshi: dict):
+        """Use one provider call to estimate whether two resolution criteria are equivalent."""
+        provider = (self._get_configured_providers() or [self._provider])[0]
+        comparison = MarketInfo(
+            condition_id=f"kalshi:{kalshi.get('ticker', '')}",
+            question=(
+                "Will these two prediction markets always resolve to the same outcome? "
+                f"Polymarket: {market.question} (ends {market.end_date or 'unknown'}). "
+                f"Kalshi: {kalshi.get('title', '')} (closes {kalshi.get('close_time', 'unknown')})."
+            ),
+            slug="", outcome_yes_price=0.5, outcome_no_price=0.5,
+            token_id_yes="", token_id_no="", liquidity=0, volume=0, volume_24hr=0,
+            best_bid=0, best_ask=0, spread=0, end_date=market.end_date,
+            category="market-equivalence", event_title="Cross-market equivalence check",
+            description=(
+                f"Polymarket rules: {market.description[:500] or 'N/A'}\n"
+                f"Kalshi rules: {kalshi.get('rules_primary', '')} "
+                f"{kalshi.get('rules_secondary', '')}"
+            )[:1000],
+        )
+        result = self._single_call(comparison, provider)
+        if result is None:
+            return None
+        probability, _, input_tokens, output_tokens = result
+        cost = calculate_api_cost(self.config.api_pricing, provider, input_tokens, output_tokens)
+        return probability, input_tokens, output_tokens, cost
 
     # ── Single-provider estimation ─────────────────────────────────────────
 
@@ -89,13 +141,19 @@ class Estimator:
             if result is None:
                 continue
             prob, reasoning, in_tok, out_tok = result
+            total_input += in_tok
+            total_output += out_tok
+            if prob is None:
+                continue
             raw_estimates.append(prob)
             if not first_reasoning:
                 first_reasoning = reasoning
-            total_input += in_tok
-            total_output += out_tok
 
-        return self._build_estimate(market, raw_estimates, total_input, total_output, first_reasoning)
+        cost = calculate_api_cost(self.config.api_pricing, self._provider, total_input, total_output)
+        self.last_api_cost_usd = cost
+        return self._build_estimate(market, raw_estimates, total_input, total_output, first_reasoning,
+                                    api_cost_usd=cost,
+                                    provider_estimates={self._provider: statistics.mean(raw_estimates)} if raw_estimates else {})
 
     # ── Multi-provider estimation ──────────────────────────────────────────
 
@@ -114,9 +172,10 @@ class Estimator:
         all_probs: list[float] = []
         total_input = 0
         total_output = 0
+        total_cost = 0.0
         first_reasoning = ""
 
-        for provider in configured:
+        def estimate_provider(provider: str):
             probs: list[float] = []
             p_input = 0
             p_output = 0
@@ -127,23 +186,33 @@ class Estimator:
                 if result is None:
                     continue
                 prob, reasoning, in_tok, out_tok = result
-                probs.append(prob)
                 p_input += in_tok
                 p_output += out_tok
+                if prob is None:
+                    continue
+                probs.append(prob)
                 if not p_reasoning:
                     p_reasoning = reasoning
 
+            return provider, probs, p_input, p_output, p_reasoning
+
+        with ThreadPoolExecutor(max_workers=len(configured), thread_name_prefix="ai-provider") as pool:
+            results = list(pool.map(estimate_provider, configured))
+
+        for provider, probs, p_input, p_output, p_reasoning in results:
+            total_input += p_input
+            total_output += p_output
+            total_cost += calculate_api_cost(self.config.api_pricing, provider, p_input, p_output)
             if not probs:
                 log.warning(f"  {provider}: no valid estimates — skipped")
                 continue
 
             provider_results.append((provider, probs, p_input, p_output, p_reasoning))
             all_probs.extend(probs)
-            total_input += p_input
-            total_output += p_output
             if not first_reasoning:
                 first_reasoning = p_reasoning
 
+        self.last_api_cost_usd = total_cost
         if not provider_results:
             return None
 
@@ -175,10 +244,27 @@ class Estimator:
         # ── Final estimate: trimmed mean across ALL provider means ─────────
         # Use per-provider means (not raw calls) so each provider counts equally
         provider_means = [m for _, m, _, _ in scored]
+        weights = calibration_weights(
+            self._calibration_stats,
+            [provider for provider, _, _, _ in scored],
+            self.config.calibration_min_samples,
+            self.config.calibration_shrinkage,
+            self.config.calibration_max_provider_weight,
+        )
+        weighted_probability = (
+            sum(mean * weights[provider] for provider, mean, _, _ in scored)
+            if weights else None
+        )
+        if weights:
+            log.info("Calibration weights: " + ", ".join(
+                f"{provider}={weight:.0%}" for provider, weight in weights.items()
+            ))
 
         return self._build_estimate(
             market, provider_means, total_input, total_output, first_reasoning,
-            note=f"multi({len(scored)} providers, winner={winner})"
+            note=f"multi({len(scored)} providers, winner={winner})", api_cost_usd=total_cost,
+            provider_estimates={provider: mean for provider, mean, _, _ in scored},
+            fair_probability_override=weighted_probability,
         )
 
     def _get_configured_providers(self) -> list[str]:
@@ -228,6 +314,9 @@ class Estimator:
         total_output: int,
         first_reasoning: str,
         note: str = "",
+        api_cost_usd: float = 0.0,
+        provider_estimates: Optional[dict[str, float]] = None,
+        fair_probability_override: Optional[float] = None,
     ) -> Optional[Estimate]:
         if len(raw_estimates) < 1:
             return None
@@ -240,7 +329,7 @@ class Estimator:
         else:
             trimmed = raw_estimates
 
-        fair_prob = statistics.mean(trimmed)
+        fair_prob = fair_probability_override if fair_probability_override is not None else statistics.mean(trimmed)
         confidence = statistics.stdev(raw_estimates) if len(raw_estimates) > 1 else 1.0
 
         if len(raw_estimates) >= 2 and confidence > self.config.max_estimate_std:
@@ -265,12 +354,18 @@ class Estimator:
             reasoning_summary=first_reasoning,
             input_tokens_used=total_input,
             output_tokens_used=total_output,
+            api_cost_usd=api_cost_usd,
+            provider_estimates=provider_estimates or {},
         )
 
     # ── Provider dispatch ──────────────────────────────────────────────────
 
     def _single_call(self, market: MarketInfo, provider: str):
-        """Single call to a specific provider. Returns (prob, reasoning, in_tok, out_tok) or None."""
+        """Return (probability or None, reasoning, input tokens, output tokens), or None before usage exists."""
+        with self._rate_limit_lock:
+            if provider in self._rate_limited_this_cycle:
+                log.debug(f"{provider} skipped — rate-limited this cycle")
+                return None
         if provider == "anthropic":
             return self._call_anthropic(market)
         elif provider == "gemini":
@@ -302,35 +397,41 @@ class Estimator:
         if not self._anthropic_client:
             log.error("Anthropic client not initialized (missing api key)")
             return None
-        try:
-            response = self._anthropic_client.messages.create(
-                model=self._get_model("anthropic"),
-                max_tokens=self.config.max_estimate_tokens,
-                temperature=self.config.ensemble_temperature,
-                system=SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": _build_user_prompt(market)}],
-            )
-            # Find the first text block (response may contain ThinkingBlock etc.)
-            text_block = next((b for b in response.content if hasattr(b, "text")), None)
-            if text_block is None:
-                return None
-            text = text_block.text.strip()  # type: ignore[union-attr]
-            in_tok = response.usage.input_tokens
-            out_tok = response.usage.output_tokens
-            result = self._parse_json_response(text)
-            if result is None:
-                return None
-            prob, reasoning = result
-            return prob, reasoning, in_tok, out_tok
-        except Exception as e:
-            if _anthropic is not None and isinstance(e, _anthropic.RateLimitError):
-                log.warning("Anthropic rate limit — waiting 5s")
-                time.sleep(5)
-                return None
-            if _anthropic is not None and isinstance(e, _anthropic.APIError):
-                log.error(f"Anthropic API error: {e}")
-                return None
-            raise
+        for attempt in range(4):
+            try:
+                response = self._anthropic_client.messages.create(
+                    model=self._get_model("anthropic"),
+                    max_tokens=self.config.max_estimate_tokens,
+                    temperature=self.config.ensemble_temperature,
+                    system=SYSTEM_PROMPT,
+                    messages=[{"role": "user", "content": _build_user_prompt(market)}],
+                )
+                in_tok = response.usage.input_tokens
+                out_tok = response.usage.output_tokens
+                text_block = next((b for b in response.content if hasattr(b, "text")), None)
+                if text_block is None:
+                    return None, "", in_tok, out_tok
+                result = self._parse_json_response(text_block.text.strip())  # type: ignore[union-attr]
+                if result is None:
+                    return None, "", in_tok, out_tok
+                prob, reasoning = result
+                return prob, reasoning, in_tok, out_tok
+            except Exception as e:
+                if _anthropic is not None and isinstance(e, _anthropic.RateLimitError):
+                    if attempt < 3:
+                        response = getattr(e, "response", None)
+                        delay = retry_delay_seconds(
+                            getattr(response, "headers", {}).get("retry-after") if response else None, attempt)
+                        log.warning(f"Anthropic rate limit — retrying in {delay:g}s")
+                        time.sleep(delay)
+                        continue
+                    self._mark_rate_limited("anthropic")
+                    return None
+                if _anthropic is not None and isinstance(e, _anthropic.APIError):
+                    log.error(f"Anthropic API error: {e}")
+                    return None
+                raise
+        return None
 
     # ── OpenAI-compatible (OpenAI, OpenRouter, Azure OpenAI) ──────────────
 
@@ -365,10 +466,8 @@ class Estimator:
         }
 
         try:
-            resp = requests.post(url, json=payload, headers=headers, timeout=30)
-            if resp.status_code == 429:
-                log.warning(f"{provider} rate limit — waiting 5s")
-                time.sleep(5)
+            resp = self._post_json_with_retry(provider, url, payload, headers)
+            if resp is None:
                 return None
             resp.raise_for_status()
             data = resp.json()
@@ -378,7 +477,7 @@ class Estimator:
             out_tok = usage.get("completion_tokens", 0)
             result = self._parse_json_response(text)
             if result is None:
-                return None
+                return None, "", in_tok, out_tok
             prob, reasoning = result
             return prob, reasoning, in_tok, out_tok
         except requests.exceptions.HTTPError as e:
@@ -403,10 +502,9 @@ class Estimator:
             },
         }
         try:
-            resp = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=30)
-            if resp.status_code == 429:
-                log.warning("Gemini rate limit — waiting 5s")
-                time.sleep(5)
+            resp = self._post_json_with_retry(
+                "gemini", url, payload, {"Content-Type": "application/json"})
+            if resp is None:
                 return None
             resp.raise_for_status()
             data = resp.json()
@@ -416,7 +514,7 @@ class Estimator:
             out_tok = usage.get("candidatesTokenCount", 0)
             result = self._parse_json_response(text)
             if result is None:
-                return None
+                return None, "", in_tok, out_tok
             prob, reasoning = result
             return prob, reasoning, in_tok, out_tok
         except requests.exceptions.HTTPError as e:
@@ -425,6 +523,24 @@ class Estimator:
         except Exception as e:
             log.debug(f"Gemini call failed: {e}")
             return None
+
+    def _post_json_with_retry(self, provider: str, url: str, payload: dict, headers: dict):
+        for attempt in range(4):
+            resp = requests.post(url, json=payload, headers=headers, timeout=30)
+            if resp.status_code not in (429, 529):
+                return resp
+            if attempt < 3:
+                delay = retry_delay_seconds(resp.headers.get("Retry-After"), attempt)
+                log.warning(f"{provider} {resp.status_code} — retrying in {delay:g}s")
+                time.sleep(delay)
+                continue
+            self._mark_rate_limited(provider)
+            log.error(f"{provider} {resp.status_code}: skipped for the rest of this cycle")
+        return None
+
+    def _mark_rate_limited(self, provider: str) -> None:
+        with self._rate_limit_lock:
+            self._rate_limited_this_cycle.add(provider)
 
     # ── API key validation ────────────────────────────────────────────────
 

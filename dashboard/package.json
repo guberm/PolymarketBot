@@ -4,11 +4,14 @@
   "description": "Polymarket Bot desktop dashboard",
   "main": "main.js",
   "scripts": {
+    "postinstall": "install-electron",
     "start": "electron .",
     "dev": "electron . --inspect"
   },
-  "dependencies": {},
+  "dependencies": {
+    "chart.js": "4.4.0"
+  },
   "devDependencies": {
-    "electron": "^33.0.0"
+    "electron": "43.2.0"
   }
 }

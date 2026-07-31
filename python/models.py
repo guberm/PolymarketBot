@@ -50,6 +50,9 @@ class Estimate:
     timestamp: float = field(default_factory=time.time)
     input_tokens_used: int = 0
     output_tokens_used: int = 0
+    api_cost_usd: float = 0.0
+    duration_seconds: float = 0.0
+    provider_estimates: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass
@@ -64,6 +67,8 @@ class Signal:
     kelly_fraction: float  # Raw Kelly fraction
     position_size_usd: float
     expected_value: float
+    limit_price: float = 0.0  # Worst acceptable book level for the GTC order
+    quote_age_seconds: float = 0.0
 
 
 @dataclass
@@ -79,9 +84,15 @@ class Position:
     current_price: float
     unrealized_pnl: float
     category: str
+    event_title: str = ""
     opened_at: float = field(default_factory=time.time)
     order_id: Optional[str] = None
     fair_estimate_at_entry: float = 0.0  # Original Claude estimate (0 = unknown/legacy)
+    liquidation_limit_price: float = 0.0
+    book_depth_complete: bool = True
+    quote_age_seconds: float = 0.0
+    last_fresh_price: float = 0.0
+    quote_failures: int = 0
 
 
 @dataclass
@@ -102,6 +113,9 @@ class Trade:
     edge_at_entry: float = 0.0
     kelly_at_entry: float = 0.0
     exit_reason: str = ""
+    quoted_vwap: float = 0.0
+    slippage_bps: float = 0.0
+    fill_status: str = ""
 
 
 @dataclass
@@ -122,6 +136,10 @@ class TopupCandidate:
     tokens_to_buy: float   # 5.0 (CLOB minimum for BUY order)
     topup_cost: float      # tokens_to_buy * current_price
     recovery_value: float  # position.shares * current_price (stuck capital to free)
+    buy_vwap: float = 0.0
+    buy_limit_price: float = 0.0
+    sell_vwap: float = 0.0
+    sell_limit_price: float = 0.0
 
 
 @dataclass
@@ -139,3 +157,4 @@ class PortfolioSnapshot:
     total_api_cost: float = 0.0
     daily_api_cost: float = 0.0
     daily_tracking_date: str = ""
+    applied_order_ids: list[str] = field(default_factory=list)

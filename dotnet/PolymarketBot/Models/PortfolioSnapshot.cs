@@ -14,4 +14,5 @@ public sealed class PortfolioSnapshot
     public double TotalApiCost { get; init; }
     public double DailyApiCost { get; init; }
     public string DailyTrackingDate { get; init; } = "";
+    public List<string> AppliedOrderIds { get; init; } = [];
 }

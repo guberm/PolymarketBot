@@ -12,7 +12,7 @@ API costs are tracked against independent USD budgets and are not deducted from 
 Every N minutes (default 10):
   1. Balance sync — fetch actual on-chain USDC, correct bankroll drift
   2. Ghost check — verify tracked positions still have on-chain tokens; write off strays
-  3. Review open positions — fetch current prices, check exit rules:
+  3. Review open positions — value each holding from full-size executable bid depth, check exit rules:
      - Stop-loss: if price dropped >25%, re-estimate first; sell only when edge is gone
      - Take-profit: sell if price reached 0.95+
      - Edge-gone: sell if market moved past original fair estimate
@@ -21,15 +21,18 @@ Every N minutes (default 10):
      - Skip penny positions (price < $0.01, unsellable on CLOB)
      - Top-up tiny positions (<5 tokens) that need exit: buy 5 more, then sell all
   4. Filter new markets by liquidity, volume, spread, and time to resolution
-  5. Estimate fair probability (N AI calls → trimmed mean)
+  5. Estimate fair probability (N AI calls → equal provider mean, optionally calibration-weighted after the sample gate)
      - Skip markets where ensemble std dev > 10% (low confidence)
      - In multi-provider mode: query all configured providers, score stable providers without rewarding outliers
   6. Find net mispricing > 10% after expected entry slippage/aggression
-  7. Size position using fractional Kelly criterion at expected executable price
-  8. Check risk limits (per-position, per-category, total exposure, daily stop-loss, drawdown)
-  9. Execute trade (paper or live via CLOB GTC limit orders, +2 ticks aggression for immediate fills)
-  10. Deduct API costs from bankroll, save state, repeat
+  7. Fetch a fresh CLOB order book, calculate full-size VWAP, and reject stale/thin books
+  8. Recalculate edge and fractional Kelly size at executable VWAP
+  9. Check risk limits against liquidation equity (per-position, per-event, per-category, total exposure, daily stop-loss, drawdown)
+  10. Execute at the quoted worst book level (paper or live via CLOB GTC limit orders)
+  11. Journal the estimate/decision, track API spend separately, save state, repeat
 ```
+
+Only one process may own a data directory at a time. `bot.lock` prevents Python and .NET from trading the same wallet concurrently and is automatically recovered after a crashed process.
 
 ## Quick Start
 
@@ -169,6 +172,33 @@ An Electron desktop app that visualises the bot's state in real time.
 
 **Requirements:** Node.js (for first-time `npm install`).
 
+## Evaluation journal and calibration
+
+Every completed estimate is appended to `data/estimates.jsonl`, including the original market price, executable VWAP/limit, confidence, decision, and skip reason. Resolution records allow post-hoc Brier score and calibration analysis:
+
+`data/resolution-watchlist.json` also tracks evaluated markets that were never bought, avoiding calibration bias toward executed trades only.
+
+```bash
+cd python
+python analyze_estimates.py --estimates ../data/estimates.jsonl
+python replay_estimates.py --estimates ../data/estimates.jsonl --min-edge 0.08 --kelly-fraction 0.10
+```
+
+The replay is deterministic and offline: it applies sizing and risk overrides to the shared journal schema emitted by both the Python and .NET bots. Calibration-weighted live aggregation is opt-in and stays equal-weighted until every active provider has at least `calibration_min_samples` resolved predictions.
+
+## Optional Kalshi shadow comparison
+
+Kalshi can be used as a read-only independent reference. Once per scan cycle the bot downloads a bounded public market snapshot, requires matching numeric terms, ranks titles by token overlap, and verifies the best candidate with one AI call. The result is written only to `estimates.jsonl`; it never changes signals, sizing, risk checks, or execution.
+
+```json
+{
+  "kalshi_shadow_enabled": true,
+  "kalshi_markets_limit": 200,
+  "kalshi_min_match_score": 0.55,
+  "kalshi_llm_same_threshold": 0.90
+}
+```
+
 ## Live Trading
 
 > **Warning:** Live trading uses real money. Start with paper trading to validate signals.
@@ -205,7 +235,7 @@ python main.py --max-position-pct 0.15 --max-total-exposure-pct 0.90 --daily-sto
 dotnet run -- --max-position-pct 0.15 --max-total-exposure-pct 0.90 --daily-stop-loss-pct 0.20
 ```
 
-Available: `--max-position-pct`, `--max-total-exposure-pct`, `--max-category-exposure-pct`, `--daily-stop-loss-pct`, `--max-drawdown-pct`, `--max-concurrent-positions`, `--verbose`, `--console`.
+Available: `--max-position-pct`, `--max-total-exposure-pct`, `--max-category-exposure-pct`, `--max-event-exposure-pct`, `--daily-stop-loss-pct`, `--max-drawdown-pct`, `--max-concurrent-positions`, `--verbose`, `--console`.
 
 ## Configuration
 
@@ -248,6 +278,11 @@ Azure also requires: `azure_openai_api_version` (default `2024-02-01`).
 | `min_time_to_resolution_hours` | `48` | Skip markets resolving too soon |
 | `min_market_price` | `0.10` | Skip extreme prices |
 | `max_spread` | `0.04` | Skip wide bid-ask spreads |
+| `max_quote_age_seconds` | `15` | Reject older CLOB order-book snapshots |
+| `quote_failure_grace_cycles` | `3` | Keep a haircutted last quote before marking an unavailable position at zero |
+| `stale_quote_haircut_pct` | `0.25` | Haircut applied while quote failures are inside the grace window |
+| `resolution_checks_per_cycle` | `20` | Bounded resolution checks for evaluated, unbought markets |
+| `resolution_retry_hours` | `6` | Delay before retrying an unresolved watched market |
 
 ### Estimation
 
@@ -259,15 +294,20 @@ Azure also requires: `azure_openai_api_version` (default `2024-02-01`).
 | `max_estimate_std` | `0.10` | Skip if ensemble std dev exceeds this |
 | `max_cycle_api_cost_usd` | `1.00` | Stop new evaluations once cycle API spend reaches this USD budget |
 | `max_daily_api_cost_usd` | `10.00` | Stop new evaluations once UTC-day API spend reaches this USD budget |
+| `api_pricing` | provider map | Input/output USD per million tokens, e.g. `anthropic=3/15` |
+| `calibration_weighting_enabled` | `false` | Use resolved provider Brier scores after the sample gate |
+| `calibration_min_samples` | `40` | Required resolved predictions for every active provider |
+| `calibration_shrinkage` | `0.50` | Shrink learned weights toward equal weights |
+| `calibration_max_provider_weight` | `0.60` | Maximum weight assigned to one provider |
 
 ### Sizing
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `min_edge` | `0.10` | Minimum mispricing to trade |
-| `kelly_fraction` | `0.20` | Fractional Kelly multiplier |
+| `min_edge` | `0.12` | Minimum mispricing to trade |
+| `kelly_fraction` | `0.15` | Fractional Kelly multiplier |
 | `min_trade_usd` | `0.5` | Minimum position size |
-| `entry_price_buffer` | `0.02` | Expected BUY slippage/aggression included in net-edge sizing |
+| `entry_price_buffer` | `0.02` | Conservative pre-book slippage used before the fresh VWAP quote |
 | `max_live_order_bankroll_pct` | `0.25` | Live guardrail: skip if CLOB minimum consumes too much free cash |
 | `allow_unsafe_risk` | `false` | Disable live guardrail clamps for explicit experiments |
 
@@ -278,16 +318,17 @@ Azure also requires: `azure_openai_api_version` (default `2024-02-01`).
 | `max_position_pct` | `0.15` | Max 15% of portfolio per position |
 | `max_total_exposure_pct` | `1.00` | Max 100% in open positions |
 | `max_category_exposure_pct` | `0.80` | Max 80% per category |
+| `max_event_exposure_pct` | `0.30` | Max 30% across correlated markets in one event |
 | `daily_stop_loss_pct` | `0.20` | Halt if daily loss > 20% |
 | `max_drawdown_pct` | `0.50` | Halt if drawdown > 50% |
-| `max_concurrent_positions` | `10` | Max open positions |
+| `max_concurrent_positions` | `8` | Max open positions |
 
 ### Exit Rules
 
 | Key | Default | Description |
 |-----|---------|-------------|
 | `enable_position_review` | `true` | Review positions each cycle |
-| `position_stop_loss_pct` | `0.25` | Sell if dropped > 25% |
+| `position_stop_loss_pct` | `0.20` | Sell if dropped > 20% |
 | `take_profit_price` | `0.95` | Sell if price ≥ 0.95 |
 | `exit_edge_buffer` | `0.05` | Buffer before edge-gone exit |
 | `review_reestimate_threshold_pct` | `0.10` | Re-run AI if price moved > 10% |
@@ -329,7 +370,8 @@ The highest-scoring provider is marked `⭐` in the log. Final estimate = trimme
 ### Kelly Criterion Sizing
 
 ```text
-execution_price = market_price + entry_price_buffer
+provisional_price = market_price + entry_price_buffer
+execution_price = full-size ask-book VWAP
 edge = fair_probability - execution_price
 b = (1 - execution_price) / execution_price
 f* = (b × p - q) / b
@@ -346,18 +388,20 @@ Capped by `max_position_pct` and available bankroll. In live mode, unless `allow
 - **Edge-gone** — sell if market moved past original fair estimate
 - **Re-estimation** — if price moved > 10%, re-run AI with `review_ensemble_size` calls before deciding to exit
 - **Cooldown** — 2 cycles before re-entering the same market after closing
-- **Top-up-and-sell** — tiny positions (< 5 tokens) buy 5 more then sell all
+- **Top-up-and-sell** — tiny positions run only when one fresh book has enough ask depth for the top-up and enough bid depth for the full exit
+- **Partial fills** — after cancellation the bot reads final matched size, persists partial BUYs, and reduces partial SELLs proportionally
 
 ## Risk Management
 
-Five layers:
+Six layers:
 1. Per-position cap (15%)
-2. Per-category cap (80%)
-3. Total exposure cap (100%)
-4. Daily stop-loss (20%)
-5. Max drawdown (50%)
+2. Per-event cap (30%)
+3. Per-category cap (80%)
+4. Total exposure cap (100%)
+5. Daily stop-loss (20%)
+6. Max drawdown (50%)
 
-Plus **cooldown** (6th layer): blocks re-entry for 2 cycles after any close.
+Plus **cooldown**: blocks re-entry for 2 cycles after any close.
 
 All limits use **portfolio value** (bankroll + open positions), not just free cash.
 
@@ -385,7 +429,7 @@ python analyze_trades.py --trades ../data/trades.jsonl
 - API spend is tracked and limited by independent USD budgets; it does not reduce trading bankroll
 - Estimation stops for the cycle/UTC-day when API spend reaches `max_cycle_api_cost_usd` or `max_daily_api_cost_usd`; the daily API counter is persisted across restarts
 - Scan skipped when `bankroll < max(min_trade_usd, max_position_pct × bankroll)`
-- Agent halts when `bankroll + exposure < $1`
+- Agent halts when liquidation equity (`bankroll + executable bid value`) falls below $1
 - Stale `is_halted` flag auto-clears on restart if portfolio is healthy
 
 ## Project Structure
@@ -398,11 +442,18 @@ python/                            ← Python implementation
   main.py                            Orchestration loop
   config.py                          BotConfig — per-provider fields, no legacy claude_model/ai_model
   estimator.py                       AI ensemble — dispatches to anthropic/openai/gemini/openrouter/azure
-  market_scanner.py                  Gamma API + spread filter
+  api_pricing.py                     Per-provider token cost calculation
+  calibration.py                     Gated provider calibration weights
+  execution.py                       CLOB depth walking and VWAP quotes
+  kalshi_shadow.py                   Optional read-only cross-market reference
+  runtime_safety.py                  Cross-language single-instance lock
+  analyze_estimates.py               Brier score and calibration report
+  replay_estimates.py                Deterministic offline decision replay
+  market_scanner.py                  Gamma API + fresh CLOB books
   portfolio.py                       Kelly sizing, risk, cooldown, ghost removal
   trader.py                          PaperTrader + LiveTrader + ghost detection
   notifier.py                        HTML email notifications (8 event types)
-  persistence.py                     Atomic JSON portfolio + JSONL trades
+  persistence.py                     Atomic portfolio + JSONL trades/estimates
   models.py                          Domain dataclasses
   logger_setup.py                    Colored console + JSON file logging
 
@@ -411,7 +462,11 @@ dotnet/PolymarketBot/              ← .NET 8 implementation (mirrors Python)
   BotConfig.cs                       Config with per-provider fields
   Services/
     Estimator.cs                     Multi-provider AI ensemble + ValidateApiKeyAsync
-    MarketScanner.cs                 Gamma API + spread filter
+    ApiPricing.cs                    Per-provider token cost calculation
+    ExecutionPricing.cs              CLOB depth walking and VWAP quotes
+    KalshiShadow.cs                  Optional read-only cross-market reference
+    RuntimeSafety.cs                 Cross-language single-instance lock
+    MarketScanner.cs                 Gamma API + fresh CLOB books
     Portfolio.cs                     Kelly sizing, risk, cooldown
     LiveTrader.cs                    CLOB GTC orders + ghost detection
     PaperTrader.cs                   Simulated execution
@@ -419,6 +474,10 @@ dotnet/PolymarketBot/              ← .NET 8 implementation (mirrors Python)
     Notifier.cs                      HTML email notifications
     PersistenceService.cs            Atomic JSON + JSONL
     JsonFileLoggerProvider.cs        JSON line logger
+
+dotnet/PolymarketBot.SelfTests/    ← Dependency-free parity and reliability checks
+tests/golden_execution.json        ← Shared Python/.NET execution vectors
+resolution-watchlist.json          ← Runtime calibration outcomes queue
 
 dashboard/                         ← Electron desktop app
   main.js                            IPC, file watchers, bot spawn, model fetching API

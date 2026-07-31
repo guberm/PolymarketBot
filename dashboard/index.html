@@ -3,12 +3,14 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' data:; blob: *;">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; blob: *;">
   <title>Polymarket Bot Dashboard</title>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+  <a class="skip-link" href="#main-content">Skip to dashboard</a>
   <div id="app">
+    <div id="ui-status" class="sr-only" role="status" aria-live="polite"></div>
 
     <!-- ── Header ──────────────────────────────────────────────────────── -->
     <header id="header">
@@ -18,18 +20,19 @@
         <div id="halted-badge" class="badge badge-amber hidden" data-i18n="statusHalted">ЗАМОРОЖЕН</div>
       </div>
       <div class="header-center">
-        <span id="data-dir-label" class="data-dir-label" title="Click to change data directory"></span>
-        <button id="btn-browse-dir" class="btn btn-ghost" title="Browse data directory">📁</button>
+        <span id="data-dir-label" class="data-dir-label" title="Current data directory"></span>
+        <button id="btn-browse-dir" class="btn btn-ghost" title="Browse data directory" aria-label="Browse data directory">📁</button>
       </div>
       <div class="header-right">
         <span id="last-updated" class="muted small"></span>
-        <button id="btn-lang" class="btn btn-ghost btn-xs" title="Switch language / Сменить язык">RU</button>
-        <button id="btn-theme" class="btn btn-ghost" title="Переключить тему">🌙</button>
+        <button id="btn-lang" class="btn btn-ghost btn-xs" title="Switch language / Сменить язык" aria-label="Switch language">RU</button>
+        <button id="btn-theme" class="btn btn-ghost" title="Переключить тему" aria-label="Toggle color theme">🌙</button>
         <button id="btn-config" class="btn btn-secondary" data-i18n="configBtn">⚙ Настройки</button>
         <button id="btn-start-stop" class="btn btn-success" data-i18n="startBtn">▶ Запуск</button>
       </div>
     </header>
 
+    <main id="main-content" tabindex="-1">
     <!-- ── Stats Row ───────────────────────────────────────────────────── -->
     <div class="stats-row">
       <div class="stat-card" id="card-bankroll">
@@ -85,6 +88,7 @@
           </div>
           <div class="table-scroll" id="positions-scroll">
             <table class="data-table" id="positions-table">
+              <caption class="sr-only">Open bot positions</caption>
               <thead>
                 <tr>
                   <th class="th-sort" data-sort="market" data-i18n="colMarket">РЫНОК <span class="sort-ind"></span></th>
@@ -113,12 +117,20 @@
         <div class="charts-row">
           <div class="card">
             <div class="card-header"><span class="card-title" data-i18n="cumulativePnl">НАКОПЛЕННАЯ П/У</span><span class="tip-icon" data-tip-key="tipCumPnl">?</span></div>
-            <div class="chart-wrap"><canvas id="pnl-chart"></canvas></div>
+            <div class="chart-wrap"><canvas id="pnl-chart" role="img" aria-label="Cumulative realized profit and loss"></canvas></div>
+            <div id="pnl-summary" class="sr-only"></div>
           </div>
           <div class="card">
             <div class="card-header"><span class="card-title" data-i18n="exposureByCategory">ПОЗИЦИИ ПО КАТЕГОРИЯМ</span><span class="tip-icon" data-tip-key="tipCatChart">?</span></div>
-            <div class="chart-wrap"><canvas id="cat-chart"></canvas></div>
+            <div class="chart-wrap"><canvas id="cat-chart" role="img" aria-label="Open exposure by market category"></canvas></div>
+            <div id="cat-summary" class="sr-only"></div>
           </div>
+        </div>
+
+        <div class="card history-card">
+          <div class="card-header"><span class="card-title" data-i18n="equityHistory">КАПИТАЛ, ПРОСАДКА И API</span></div>
+          <div class="chart-wrap chart-wrap-history"><canvas id="history-chart" aria-label="Equity, drawdown and API cost history" role="img"></canvas></div>
+          <div id="history-summary" class="chart-summary muted small">Ожидание истории…</div>
         </div>
 
         <!-- Trade History -->
@@ -130,6 +142,7 @@
           </div>
           <div class="table-scroll">
             <table class="data-table" id="trades-table">
+              <caption class="sr-only">Bot trade history</caption>
               <thead>
                 <tr>
                   <th class="th-sort" data-sort="time" data-i18n="colTime">ВРЕМЯ <span class="sort-ind"></span></th>
@@ -155,13 +168,26 @@
       </div><!-- /left-col -->
 
       <!-- Horizontal resize handle -->
-      <div class="rh rh-h" id="rh-main" title="Drag to resize"></div>
+      <div class="rh rh-h" id="rh-main" title="Drag or use arrow keys to resize" role="separator" tabindex="0" aria-label="Resize main panels" aria-orientation="vertical" aria-valuemin="600"></div>
 
       <!-- RIGHT col -->
       <div class="right-col" id="right-col">
 
         <!-- Upper: risk + exit (vertically resizable) -->
         <div id="right-upper">
+          <div class="card">
+            <div class="card-header">
+              <span class="card-title" data-i18n="attentionTitle">ТРЕБУЕТ ВНИМАНИЯ</span>
+              <span id="attention-count" class="badge badge-green">0</span>
+            </div>
+            <div id="attention-list" class="attention-list"></div>
+          </div>
+
+          <div class="card">
+            <div class="card-header"><span class="card-title" data-i18n="providerHealth">AI-ПРОВАЙДЕРЫ</span></div>
+            <div id="provider-health" class="provider-health"></div>
+          </div>
+
           <!-- Risk Meters -->
           <div class="card">
             <div class="card-header"><span class="card-title" data-i18n="riskLimits">ЛИМИТЫ РИСКА</span><span class="tip-icon" data-tip-key="tipRisk">?</span></div>
@@ -176,7 +202,7 @@
         </div>
 
         <!-- Vertical resize handle -->
-        <div class="rh rh-v" id="rh-right" title="Drag to resize"></div>
+        <div class="rh rh-v" id="rh-right" title="Drag or use arrow keys to resize" role="separator" tabindex="0" aria-label="Resize monitoring and log panels" aria-orientation="horizontal" aria-valuemin="80"></div>
 
         <!-- Live Log -->
         <div class="card log-card flex-grow">
@@ -191,21 +217,22 @@
               <button id="btn-clear-log" class="btn btn-ghost btn-xs"><span data-i18n="clearBtn">✕ очистить</span></button>
             </div>
           </div>
-          <div id="log-container" class="log-container"></div>
+          <div id="log-container" class="log-container" role="log" aria-label="Bot log" aria-live="off"></div>
         </div>
 
       </div><!-- /right-col -->
     </div><!-- /main-grid -->
+    </main>
   </div><!-- /app -->
 
   <!-- ══ Config Modal ═══════════════════════════════════════════════════════ -->
-  <div id="config-modal" class="modal-overlay hidden">
-    <div class="modal-box modal-wide">
+  <div id="config-modal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="config-title">
+    <div class="modal-box modal-wide" tabindex="-1">
       <div class="modal-hdr">
-        <h2 data-i18n="configTitle">⚙ Настройки</h2>
+        <h2 id="config-title" data-i18n="configTitle">⚙ Настройки</h2>
         <div class="modal-hdr-right">
           <button id="btn-save-config" class="btn btn-success" data-i18n="saveBtn">💾 Сохранить</button>
-          <button id="btn-close-config" class="btn btn-ghost">✕</button>
+          <button id="btn-close-config" class="btn btn-ghost" aria-label="Close settings">✕</button>
         </div>
       </div>
       <div class="modal-body">
@@ -220,11 +247,11 @@
   </div>
 
   <!-- ══ Start Bot Modal ════════════════════════════════════════════════════ -->
-  <div id="start-modal" class="modal-overlay hidden">
-    <div class="modal-box modal-small">
+  <div id="start-modal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="start-title">
+    <div class="modal-box modal-small" tabindex="-1">
       <div class="modal-hdr">
-        <h2 data-i18n="startModalTitle">▶ Запуск бота</h2>
-        <button id="btn-close-start" class="btn btn-ghost">✕</button>
+        <h2 id="start-title" data-i18n="startModalTitle">▶ Запуск бота</h2>
+        <button id="btn-close-start" class="btn btn-ghost" aria-label="Close start dialog">✕</button>
       </div>
       <div class="modal-body">
         <div class="form-group">
@@ -241,12 +268,28 @@
             <label class="check-label"><input type="checkbox" id="opt-console"> --console</label>
           </div>
         </div>
+        <div id="live-start-warning" class="live-warning hidden">
+          <strong data-i18n="liveWarningTitle">LIVE: реальные денежные ордера</strong>
+          <div id="live-risk-summary" class="small mono"></div>
+          <label class="check-label live-confirm"><input type="checkbox" id="live-start-confirm"> <span data-i18n="liveConfirm">Я понимаю, что бот будет размещать реальные ордера</span></label>
+        </div>
         <button id="btn-confirm-start" class="btn btn-success btn-full" data-i18n="launchBtn">▶ Запустить</button>
       </div>
     </div>
   </div>
 
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <div id="position-modal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="position-title">
+    <div class="modal-box modal-small" tabindex="-1">
+      <div class="modal-hdr">
+        <h2 id="position-title" data-i18n="positionDetails">ДЕТАЛИ ПОЗИЦИИ</h2>
+        <button id="btn-close-position" class="btn btn-ghost" aria-label="Close position details">✕</button>
+      </div>
+      <div id="position-details" class="modal-body details-grid"></div>
+    </div>
+  </div>
+
+  <script src="node_modules/chart.js/dist/chart.umd.js"></script>
+  <script src="dashboard-model.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>

@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using PolymarketBot.Models;
@@ -302,6 +303,20 @@ public sealed class MarketScanner
         }
     }
 
+    public async Task<Dictionary<string, Dictionary<string, string>?>> CheckMarketResolutionsAsync(
+        IEnumerable<string> conditionIds, CancellationToken ct = default)
+    {
+        using var gate = new SemaphoreSlim(4);
+        var results = new ConcurrentDictionary<string, Dictionary<string, string>?>();
+        await Task.WhenAll(conditionIds.Select(async conditionId =>
+        {
+            await gate.WaitAsync(ct);
+            try { results[conditionId] = await CheckMarketResolutionAsync(conditionId, ct); }
+            finally { gate.Release(); }
+        }));
+        return results.ToDictionary();
+    }
+
     public async Task<Dictionary<string, double>> GetMarketPricesAsync(
         IEnumerable<string> tokenIds, CancellationToken ct = default)
     {
@@ -337,6 +352,109 @@ public sealed class MarketScanner
         {
             return null;
         }
+    }
+
+    public async Task<ExecutionQuote?> GetBuyQuoteAsync(
+        string tokenId, double amountUsd, CancellationToken ct = default)
+    {
+        var book = await GetOrderBookAsync(tokenId, ct);
+        if (book is null) return null;
+        var quote = ExecutionPricing.CalculateBuy(book.Value.Asks, amountUsd);
+        return quote with { TimestampMs = book.Value.TimestampMs, AgeSeconds = book.Value.AgeSeconds };
+    }
+
+    public async Task<ExecutionQuote?> GetSellQuoteAsync(
+        string tokenId, double shares, CancellationToken ct = default)
+    {
+        var book = await GetOrderBookAsync(tokenId, ct);
+        if (book is null) return null;
+        var quote = ExecutionPricing.CalculateSell(book.Value.Bids, shares);
+        return quote with { TimestampMs = book.Value.TimestampMs, AgeSeconds = book.Value.AgeSeconds };
+    }
+
+    public async Task<Dictionary<string, ExecutionQuote>> GetSellQuotesAsync(
+        IEnumerable<Position> positions, CancellationToken ct = default)
+    {
+        using var gate = new SemaphoreSlim(4);
+        var results = new ConcurrentDictionary<string, ExecutionQuote>();
+        await Task.WhenAll(positions.Select(async position =>
+        {
+            await gate.WaitAsync(ct);
+            try
+            {
+                var quote = await GetSellQuoteAsync(position.TokenId, position.Shares, ct);
+                if (quote.HasValue) results[position.TokenId] = quote.Value;
+            }
+            finally { gate.Release(); }
+        }));
+        return results.ToDictionary();
+    }
+
+    public async Task<(ExecutionQuote Buy, ExecutionQuote Sell)?> GetTopupQuotesAsync(
+        string tokenId, double buyShares, double sellShares, CancellationToken ct = default)
+    {
+        var book = await GetOrderBookAsync(tokenId, ct);
+        if (book is null) return null;
+        var buy = ExecutionPricing.CalculateBuyShares(book.Value.Asks, buyShares) with
+            { TimestampMs = book.Value.TimestampMs, AgeSeconds = book.Value.AgeSeconds };
+        var sell = ExecutionPricing.CalculateSell(book.Value.Bids, sellShares) with
+            { TimestampMs = book.Value.TimestampMs, AgeSeconds = book.Value.AgeSeconds };
+        return (buy, sell);
+    }
+
+    private async Task<(List<BookLevel> Bids, List<BookLevel> Asks, long TimestampMs, double AgeSeconds)?>
+        GetOrderBookAsync(string tokenId, CancellationToken ct)
+    {
+        try
+        {
+            var url = $"{_clobHost}/book?token_id={Uri.EscapeDataString(tokenId)}";
+            var resp = await _http.GetAsync(url, ct);
+            resp.EnsureSuccessStatusCode();
+            using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
+            var root = doc.RootElement;
+            var bids = ParseBookLevels(root, "bids");
+            var asks = ParseBookLevels(root, "asks");
+            var timestampMs = ParseTimestampMs(root);
+            var ageSeconds = timestampMs > 0
+                ? Math.Max(0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - timestampMs) / 1000.0
+                : 0;
+            if (timestampMs > 0 && ageSeconds > _config.MaxQuoteAgeSeconds)
+            {
+                _log.LogWarning("Stale CLOB book for {Token} age={Age:F1}s > {Max:F1}s",
+                    tokenId[..Math.Min(20, tokenId.Length)], ageSeconds, _config.MaxQuoteAgeSeconds);
+                return null;
+            }
+            return (bids, asks, timestampMs, ageSeconds);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.LogDebug("Failed to get order book for {Token}: {Error}",
+                tokenId[..Math.Min(20, tokenId.Length)], ex.Message);
+            return null;
+        }
+    }
+
+    private static List<BookLevel> ParseBookLevels(JsonElement root, string name)
+    {
+        var levels = new List<BookLevel>();
+        if (!root.TryGetProperty(name, out var values) || values.ValueKind != JsonValueKind.Array)
+            return levels;
+        foreach (var value in values.EnumerateArray())
+        {
+            var price = value.GetDoubleOrDefault("price");
+            var size = value.GetDoubleOrDefault("size");
+            if (price > 0 && size > 0) levels.Add(new BookLevel(price, size));
+        }
+        return levels;
+    }
+
+    private static long ParseTimestampMs(JsonElement root)
+    {
+        if (!root.TryGetProperty("timestamp", out var timestamp)) return 0;
+        long value = 0;
+        if (timestamp.ValueKind == JsonValueKind.Number) timestamp.TryGetInt64(out value);
+        else if (timestamp.ValueKind == JsonValueKind.String) long.TryParse(timestamp.GetString(), out value);
+        return value is > 0 and < 10_000_000_000 ? value * 1000 : value;
     }
 }
 

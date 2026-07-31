@@ -5,9 +5,6 @@ namespace PolymarketBot.Services;
 
 public sealed class Portfolio
 {
-    private const double InputCostPerMTok = 3.0;
-    private const double OutputCostPerMTok = 15.0;
-
     private readonly BotConfig _config;
     private readonly ILogger<Portfolio> _log;
 
@@ -22,6 +19,7 @@ public sealed class Portfolio
     public double TotalApiCost { get; private set; }
     public double DailyApiCost { get; private set; }
     public string DailyTrackingDate { get; private set; }
+    private readonly HashSet<string> _appliedOrderIds;
 
     // condition_id -> DateTimeOffset of close (in-memory cooldown, not persisted)
     private readonly Dictionary<string, DateTimeOffset> _recentlyClosed = new();
@@ -46,6 +44,7 @@ public sealed class Portfolio
             DailyTrackingDate = string.IsNullOrWhiteSpace(snapshot.DailyTrackingDate)
                 ? DateTimeOffset.UtcNow.Date.ToString("yyyy-MM-dd")
                 : snapshot.DailyTrackingDate;
+            _appliedOrderIds = snapshot.AppliedOrderIds.ToHashSet();
         }
         else
         {
@@ -60,6 +59,7 @@ public sealed class Portfolio
             TotalApiCost = 0;
             DailyApiCost = 0;
             DailyTrackingDate = DateTimeOffset.UtcNow.Date.ToString("yyyy-MM-dd");
+            _appliedOrderIds = [];
         }
     }
 
@@ -76,12 +76,33 @@ public sealed class Portfolio
         TotalApiCost = TotalApiCost,
         DailyApiCost = DailyApiCost,
         DailyTrackingDate = DailyTrackingDate,
+        AppliedOrderIds = _appliedOrderIds.ToList(),
     };
+
+    public bool HasAppliedOrder(string orderId) => _appliedOrderIds.Contains(orderId);
+
+    public void MarkOrderApplied(string orderId)
+    {
+        if (string.IsNullOrWhiteSpace(orderId)) return;
+        _appliedOrderIds.Add(orderId);
+        if (_appliedOrderIds.Count <= 500) return;
+        foreach (var old in _appliedOrderIds.Take(_appliedOrderIds.Count - 500).ToList())
+            _appliedOrderIds.Remove(old);
+    }
 
     public double TotalExposure() => Positions.Sum(p => p.SizeUsd);
 
+    public double LiquidationValue() => Positions.Sum(p => Math.Max(0, p.Shares * p.CurrentPrice));
+
+    public double Equity() => Bankroll + LiquidationValue();
+
     public double CategoryExposure(string category)
         => Positions.Where(p => p.Category == category).Sum(p => p.SizeUsd);
+
+    public double EventExposure(string eventTitle)
+        => string.IsNullOrWhiteSpace(eventTitle) ? 0 : Positions
+            .Where(p => string.Equals(p.EventTitle.Trim(), eventTitle.Trim(), StringComparison.OrdinalIgnoreCase))
+            .Sum(p => p.SizeUsd);
 
     public bool HasPosition(string conditionId)
         => Positions.Any(p => p.ConditionId == conditionId);
@@ -97,19 +118,17 @@ public sealed class Portfolio
         var noEdge = (1.0 - fair) - noExecutionPrice;
 
         Side side;
-        double edge, marketPrice, executionPrice;
+        double marketPrice, executionPrice;
 
         if (yesEdge > noEdge && yesEdge > _config.MinEdge)
         {
             side = Side.YES;
-            edge = yesEdge;
             marketPrice = market.OutcomeYesPrice;
             executionPrice = yesExecutionPrice;
         }
         else if (noEdge > _config.MinEdge)
         {
             side = Side.NO;
-            edge = noEdge;
             marketPrice = market.OutcomeNoPrice;
             executionPrice = noExecutionPrice;
         }
@@ -118,7 +137,30 @@ public sealed class Portfolio
             return null;
         }
 
-        if (executionPrice <= 0 || executionPrice >= 1) return null;
+        return BuildSignal(market, estimate, side, marketPrice, executionPrice, executionPrice, 0, null);
+    }
+
+    public Signal? RepriceSignal(
+        Signal signal, double executionPrice, double limitPrice, double quoteAgeSeconds = 0)
+    {
+        return BuildSignal(signal.Market, signal.Estimate, signal.Side, signal.MarketPrice,
+            executionPrice, limitPrice, quoteAgeSeconds, signal.PositionSizeUsd);
+    }
+
+    private Signal? BuildSignal(
+        MarketInfo market,
+        Estimate estimate,
+        Side side,
+        double marketPrice,
+        double executionPrice,
+        double limitPrice,
+        double quoteAgeSeconds,
+        double? sizeCapUsd)
+    {
+        var fair = estimate.FairProbability;
+        var fairForSide = side == Side.YES ? fair : 1.0 - fair;
+        var edge = fairForSide - executionPrice;
+        if (edge <= _config.MinEdge || executionPrice <= 0 || executionPrice >= 1) return null;
 
         // Kelly criterion: f* = (b*p - q) / b
         var b = (1.0 / executionPrice) - 1.0;
@@ -135,10 +177,11 @@ public sealed class Portfolio
             ? Math.Min(_config.MaxPositionPct, 0.15)
             : _config.MaxPositionPct;
         var kelly = kellyRaw * kellyFraction;
-        var portfolioVal = Bankroll + TotalExposure();
+        var portfolioVal = Equity();
         var sizeUsd = kelly * portfolioVal;
         sizeUsd = Math.Min(sizeUsd, portfolioVal * maxPositionPct);
         sizeUsd = Math.Min(sizeUsd, Bankroll); // never exceed available cash
+        if (sizeCapUsd.HasValue) sizeUsd = Math.Min(sizeUsd, sizeCapUsd.Value);
 
         if (sizeUsd < _config.MinTradeUsd) return null;
 
@@ -171,6 +214,8 @@ public sealed class Portfolio
             KellyFraction = kelly,
             PositionSizeUsd = Math.Round(sizeUsd, 2),
             ExpectedValue = Math.Round(sizeUsd * edge, 4),
+            LimitPrice = limitPrice,
+            QuoteAgeSeconds = quoteAgeSeconds,
         };
     }
 
@@ -183,8 +228,8 @@ public sealed class Portfolio
 
     public bool CheckPortfolioRisk()
     {
-        // Daily stop loss (include open position value — deployed capital isn't lost)
-        var portfolioValue = Bankroll + TotalExposure();
+        // Daily stop loss uses executable liquidation value, not cost basis.
+        var portfolioValue = Equity();
         var dailyPnl = portfolioValue - DailyStartValue;
         var dailyStopLossPct = _config.LiveTrading && !_config.AllowUnsafeRisk
             ? Math.Min(_config.DailyStopLossPct, 0.25)
@@ -258,7 +303,7 @@ public sealed class Portfolio
             return false;
         }
 
-        var pv = Bankroll + TotalExposure();
+        var pv = Equity();
         var newExposure = TotalExposure() + signal.PositionSizeUsd;
         var maxTotalExposurePct = _config.LiveTrading && !_config.AllowUnsafeRisk
             ? Math.Min(_config.MaxTotalExposurePct, 0.90)
@@ -276,6 +321,15 @@ public sealed class Portfolio
         {
             _log.LogInformation("Risk BLOCK: '{Category}' exposure ${Exp:F2} > limit ${Limit:F2}",
                 signal.Market.Category, catExp, catLimit);
+            return false;
+        }
+
+        var eventExp = EventExposure(signal.Market.EventTitle) + signal.PositionSizeUsd;
+        var eventLimit = pv * _config.MaxEventExposurePct;
+        if (!string.IsNullOrWhiteSpace(signal.Market.EventTitle) && eventExp > eventLimit)
+        {
+            _log.LogInformation("Risk BLOCK: event exposure ${Exp:F2} > limit ${Limit:F2} for '{Event}'",
+                eventExp, eventLimit, Truncate(signal.Market.EventTitle, 40));
             return false;
         }
 
@@ -303,9 +357,33 @@ public sealed class Portfolio
         TotalRealizedPnl += pnl;
         Positions = Positions.Where(p => p.ConditionId != conditionId).ToList();
         _recentlyClosed[conditionId] = DateTimeOffset.UtcNow;
-        HighWaterMark = Math.Max(HighWaterMark, Bankroll);
+        HighWaterMark = Math.Max(HighWaterMark, Equity());
 
         _log.LogInformation("Closed {Question} PnL: ${Pnl:+0.00;-0.00}", Truncate(pos.Question, 40), pnl);
+        return pnl;
+    }
+
+    public double ReducePosition(string conditionId, double soldShares, double exitPrice)
+    {
+        var pos = Positions.FirstOrDefault(p => p.ConditionId == conditionId);
+        if (pos is null || soldShares <= 0) return 0;
+        var sold = Math.Min(soldShares, pos.Shares);
+        var costBasis = sold * pos.EntryPrice;
+        var proceeds = sold * exitPrice;
+        var pnl = proceeds - costBasis;
+        Bankroll += proceeds;
+        TotalRealizedPnl += pnl;
+        TotalTrades++;
+        pos.Shares -= sold;
+        pos.SizeUsd = Math.Max(0, pos.SizeUsd - costBasis);
+        if (pos.Shares < 0.1)
+        {
+            Positions = Positions.Where(p => p.ConditionId != conditionId).ToList();
+            _recentlyClosed[conditionId] = DateTimeOffset.UtcNow;
+        }
+        else
+            pos.UnrealizedPnl = pos.Shares * (pos.CurrentPrice - pos.EntryPrice);
+        HighWaterMark = Math.Max(HighWaterMark, Equity());
         return pnl;
     }
 
@@ -321,7 +399,7 @@ public sealed class Portfolio
         TotalTrades++;
         Positions = Positions.Where(p => p.ConditionId != conditionId).ToList();
         _recentlyClosed[conditionId] = DateTimeOffset.UtcNow;
-        HighWaterMark = Math.Max(HighWaterMark, Bankroll);
+        HighWaterMark = Math.Max(HighWaterMark, Equity());
 
         var result = won ? "WON" : "LOST";
         _log.LogInformation("Resolved ({Result}): {Question} payout=${Payout:F2}, PnL=${Pnl:+0.00;-0.00}",
@@ -340,6 +418,45 @@ public sealed class Portfolio
                 pos.CurrentPrice = price;
                 pos.UnrealizedPnl = pos.Shares * (pos.CurrentPrice - pos.EntryPrice);
             }
+        }
+    }
+
+    public void UpdatePositionQuotes(IReadOnlyDictionary<string, ExecutionQuote> quotes)
+    {
+        foreach (var pos in Positions)
+        {
+            if (!quotes.TryGetValue(pos.TokenId, out var quote) || pos.Shares <= 0)
+            {
+                pos.QuoteFailures++;
+                if (pos.LastFreshPrice <= 0) pos.LastFreshPrice = pos.CurrentPrice;
+                var fallback = pos.LastFreshPrice;
+                if (fallback > 0 && pos.QuoteFailures < Math.Max(1, _config.QuoteFailureGraceCycles))
+                {
+                    pos.CurrentPrice = fallback * (1 - _config.StaleQuoteHaircutPct);
+                    pos.UnrealizedPnl = pos.Shares * (pos.CurrentPrice - pos.EntryPrice);
+                    _log.LogWarning("Quote unavailable for {Question}; using {Haircut:P0} haircut ({Failures}/{Grace} grace cycles)",
+                        Truncate(pos.Question, 40), _config.StaleQuoteHaircutPct, pos.QuoteFailures,
+                        _config.QuoteFailureGraceCycles - 1);
+                }
+                else
+                {
+                    pos.CurrentPrice = 0;
+                    pos.UnrealizedPnl = -pos.SizeUsd;
+                    _log.LogError("Quote grace exhausted for {Question}; liquidation value set to zero",
+                        Truncate(pos.Question, 40));
+                }
+                pos.LiquidationLimitPrice = 0;
+                pos.BookDepthComplete = false;
+                pos.QuoteAgeSeconds = 0;
+                continue;
+            }
+            pos.CurrentPrice = quote.FilledValue / pos.Shares;
+            pos.UnrealizedPnl = pos.Shares * (pos.CurrentPrice - pos.EntryPrice);
+            pos.LiquidationLimitPrice = quote.Complete ? quote.WorstPrice : 0;
+            pos.BookDepthComplete = quote.Complete;
+            pos.QuoteAgeSeconds = quote.AgeSeconds;
+            pos.LastFreshPrice = pos.CurrentPrice;
+            pos.QuoteFailures = 0;
         }
     }
 
@@ -490,17 +607,20 @@ public sealed class Portfolio
                 "Balance sync (downward): ${Old:F2} -> ${New:F2} (${Diff:F2}, {Count} positions open)",
                 prevBankroll, Bankroll, diff, Positions.Count);
 
-        HighWaterMark = Math.Max(HighWaterMark, Bankroll + TotalExposure());
+        HighWaterMark = Math.Max(HighWaterMark, Equity());
     }
 
     // -- Cost tracking --
 
     public void RecordApiCost(int inputTokens, int outputTokens)
     {
-        var cost = (inputTokens * InputCostPerMTok / 1_000_000.0) +
-                   (outputTokens * OutputCostPerMTok / 1_000_000.0);
-        TotalApiCost += cost;
-        DailyApiCost += cost;
+        RecordApiCostUsd((inputTokens * 3.0 + outputTokens * 15.0) / 1_000_000.0);
+    }
+
+    public void RecordApiCostUsd(double cost)
+    {
+        TotalApiCost += Math.Max(0, cost);
+        DailyApiCost += Math.Max(0, cost);
     }
 
     /// <summary>
@@ -523,7 +643,7 @@ public sealed class Portfolio
 
     public void ResetDaily(string? trackingDate = null)
     {
-        DailyStartValue = Bankroll + TotalExposure();
+        DailyStartValue = Equity();
         DailyApiCost = 0;
         DailyTrackingDate = string.IsNullOrWhiteSpace(trackingDate)
             ? DateTimeOffset.UtcNow.Date.ToString("yyyy-MM-dd")

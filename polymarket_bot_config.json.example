@@ -42,27 +42,44 @@
   "min_time_to_resolution_hours": 48,
   "min_market_price": 0.10,
   "max_spread": 0.04,
+  "max_quote_age_seconds": 15,
+  "quote_failure_grace_cycles": 3,
+  "stale_quote_haircut_pct": 0.25,
+  "resolution_checks_per_cycle": 20,
+  "resolution_retry_hours": 6,
+
+  "____SECTION_KALSHI____": "── Optional Kalshi comparison (read-only, never affects trades) ───────",
+
+  "kalshi_shadow_enabled": false,
+  "kalshi_api_host": "https://api.elections.kalshi.com/trade-api/v2",
+  "kalshi_markets_limit": 200,
+  "kalshi_min_match_score": 0.55,
+  "kalshi_llm_same_threshold": 0.90,
 
   "____SECTION_AI_PROVIDER____": "── AI provider (pick one) ────────────────────────────────────────────",
 
   "ai_provider": "anthropic",
-  "ai_model": "claude-sonnet-4-6",
+  "multi_provider": false,
 
   "anthropic_enabled": true,
   "anthropic_api_key": "sk-ant-...",
   "anthropic_api_host": "https://api.anthropic.com",
+  "anthropic_model": "claude-sonnet-4-6",
 
   "openai_enabled": true,
   "openai_api_key": "",
   "openai_api_host": "https://api.openai.com",
+  "openai_model": "gpt-4o",
 
   "gemini_enabled": true,
   "gemini_api_key": "",
   "gemini_api_host": "https://generativelanguage.googleapis.com",
+  "gemini_model": "gemini-2.0-flash",
 
   "openrouter_enabled": true,
   "openrouter_api_key": "",
   "openrouter_api_host": "https://openrouter.ai",
+  "openrouter_model": "",
 
   "azure_openai_enabled": true,
   "azure_openai_api_key": "",
@@ -78,6 +95,11 @@
   "max_estimate_std": 0.10,
   "max_cycle_api_cost_usd": 1.00,
   "max_daily_api_cost_usd": 10.00,
+  "api_pricing": "anthropic=3/15,openai=5/15,gemini=0.10/0.40,openrouter=3/15,azure_openai=5/15",
+  "calibration_weighting_enabled": false,
+  "calibration_min_samples": 40,
+  "calibration_shrinkage": 0.50,
+  "calibration_max_provider_weight": 0.60,
 
   "____SECTION_SIZING____": "── Position sizing ───────────────────────────────────────────────────",
 
@@ -93,6 +115,7 @@
   "max_position_pct": 0.15,
   "max_total_exposure_pct": 1.00,
   "max_category_exposure_pct": 0.80,
+  "max_event_exposure_pct": 0.30,
   "daily_stop_loss_pct": 0.20,
   "max_drawdown_pct": 0.50,
   "max_concurrent_positions": 10,

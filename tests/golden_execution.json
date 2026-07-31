@@ -1,0 +1,35 @@
+[
+  {
+    "name": "buy_usd_multi_level",
+    "kind": "buy_usd",
+    "requested": 6.0,
+    "levels": [[0.50, 10], [0.40, 10]],
+    "filled_quantity": 14.0,
+    "filled_value": 6.0,
+    "vwap": 0.42857142857142855,
+    "worst_price": 0.50,
+    "complete": true
+  },
+  {
+    "name": "sell_shares_multi_level",
+    "kind": "sell_shares",
+    "requested": 15.0,
+    "levels": [[0.50, 10], [0.60, 10]],
+    "filled_quantity": 15.0,
+    "filled_value": 8.5,
+    "vwap": 0.5666666666666667,
+    "worst_price": 0.50,
+    "complete": true
+  },
+  {
+    "name": "thin_buy",
+    "kind": "buy_usd",
+    "requested": 10.0,
+    "levels": [[0.40, 10]],
+    "filled_quantity": 10.0,
+    "filled_value": 4.0,
+    "vwap": 0.40,
+    "worst_price": 0.40,
+    "complete": false
+  }
+]

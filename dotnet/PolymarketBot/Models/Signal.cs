@@ -11,4 +11,6 @@ public sealed class Signal
     public double KellyFraction { get; init; }
     public double PositionSizeUsd { get; init; }
     public double ExpectedValue { get; init; }
+    public double LimitPrice { get; init; }
+    public double QuoteAgeSeconds { get; init; }
 }

@@ -17,4 +17,7 @@ public sealed class Trade
     public double EdgeAtEntry { get; init; }
     public double KellyAtEntry { get; init; }
     public string ExitReason { get; init; } = "";
+    public double QuotedVwap { get; init; }
+    public double SlippageBps { get; init; }
+    public string FillStatus { get; init; } = "";
 }

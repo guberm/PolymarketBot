@@ -80,6 +80,11 @@ def print_summary(trades: list[dict], realized: list[dict], worst: int) -> None:
     print(f"Trades: {len(trades)}")
     print(f"Actions: {dict(Counter(t.get('action') for t in trades))}")
     print(f"Exit reasons: {dict(Counter(t.get('exit_reason') or '(buy/open)' for t in trades))}")
+    print(f"Fill status: {dict(Counter(t.get('fill_status') or 'legacy' for t in trades))}")
+
+    measured_slippage = [float(t.get("slippage_bps") or 0) for t in trades if t.get("quoted_vwap")]
+    if measured_slippage:
+        print(f"Avg adverse slippage: {sum(measured_slippage) / len(measured_slippage):.1f} bps")
 
     total_pnl = sum(r["pnl"] for r in realized)
     avg_pnl = total_pnl / len(realized) if realized else 0.0

@@ -11,6 +11,9 @@ contextBridge.exposeInMainWorld('api', {
   readPortfolio: ()      => ipcRenderer.invoke('read-portfolio'),
   readTrades:    ()      => ipcRenderer.invoke('read-trades'),
   readLogs:      (n)     => ipcRenderer.invoke('read-logs', n),
+  readEstimates: ()      => ipcRenderer.invoke('read-estimates'),
+  readPendingOrders: ()  => ipcRenderer.invoke('read-pending-orders'),
+  readEquityHistory: ()  => ipcRenderer.invoke('read-equity-history'),
 
   // Config
   readConfig:    ()      => ipcRenderer.invoke('read-config'),

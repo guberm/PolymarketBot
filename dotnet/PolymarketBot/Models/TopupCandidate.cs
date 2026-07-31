@@ -6,6 +6,10 @@ public sealed class TopupCandidate
     public required Position Position { get; init; }
     public required string ExitReason { get; init; }
     public double TokensToBuy { get; init; }    // 5.0 (CLOB minimum for BUY order)
-    public double TopupCost { get; init; }       // TokensToBuy * CurrentPrice
-    public double RecoveryValue { get; init; }   // Position.Shares * CurrentPrice (stuck capital to free)
+    public double TopupCost { get; set; }
+    public double RecoveryValue { get; set; }
+    public double BuyVwap { get; set; }
+    public double BuyLimitPrice { get; set; }
+    public double SellVwap { get; set; }
+    public double SellLimitPrice { get; set; }
 }

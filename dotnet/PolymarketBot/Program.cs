@@ -53,6 +53,8 @@ if (ParseDoubleArg(args, "--max-total-exposure-pct") is { } maxExpPct)
     config.MaxTotalExposurePct = maxExpPct;
 if (ParseDoubleArg(args, "--max-category-exposure-pct") is { } maxCatPct)
     config.MaxCategoryExposurePct = maxCatPct;
+if (ParseDoubleArg(args, "--max-event-exposure-pct") is { } maxEventPct)
+    config.MaxEventExposurePct = maxEventPct;
 if (ParseDoubleArg(args, "--daily-stop-loss-pct") is { } dailySl)
     config.DailyStopLossPct = dailySl;
 if (ParseDoubleArg(args, "--max-drawdown-pct") is { } maxDd)
@@ -74,6 +76,12 @@ void Con(string msg) { if (console_) Console.WriteLine($"[{Ts()}] {msg}"); }
 // ── Logging ─────────────────────────────────────────────────────
 
 Directory.CreateDirectory(config.DataDir);
+using var instanceLock = new InstanceLock(config.DataDir);
+if (!instanceLock.Acquire())
+{
+    Console.Error.WriteLine($"Another bot instance owns {Path.Combine(config.DataDir, "bot.lock")}; refusing to start");
+    return 2;
+}
 
 // JSON file logger (matches Python's JsonFormatter → data/bot.log)
 using var fileLogStream = new StreamWriter(
@@ -136,6 +144,7 @@ log.LogInformation(new string('=', 60));
     log.LogInformation("  Max position:   {P:P0}  kelly={K:F2}",  effectiveMaxPosition, effectiveKelly);
     log.LogInformation("  Max exposure:   {E:P0}  max_positions={N}",  effectiveMaxExposure, config.MaxConcurrentPositions);
     log.LogInformation("  Category cap:   {C:P0}",  config.MaxCategoryExposurePct);
+    log.LogInformation("  Event cap:      {E:P0}",  config.MaxEventExposurePct);
     log.LogInformation("  Daily SL:       {D:P0}  max_drawdown={M:P0}",  effectiveDailyStop, effectiveMaxDrawdown);
     if (config.LiveTrading && !config.AllowUnsafeRisk &&
         (effectiveKelly != config.KellyFraction ||
@@ -154,6 +163,10 @@ log.LogInformation(new string('=', 60));
     log.LogInformation("  Min liquidity:  ${L:N0}  min_volume_24h=${V:N0}",  config.MinLiquidity, config.MinVolume24Hr);
     log.LogInformation("  Min price:      {P:P0}  max_spread={S:P0}",  config.MinMarketPrice, config.MaxSpread);
     log.LogInformation("  Min TTR:        {H}h",  config.MinTimeToResolutionHours);
+    log.LogInformation("  Quote safety:   grace={G} cycles  stale_haircut={H:P0}",
+        config.QuoteFailureGraceCycles, config.StaleQuoteHaircutPct);
+    log.LogInformation("  Resolution:     checks/cycle={C}  retry={R}h",
+        config.ResolutionChecksPerCycle, config.ResolutionRetryHours);
     log.LogInformation("── EXITS ────────────────────────────────────────────────────");
     log.LogInformation("  Stop-loss:      {SL:P0}  take-profit={TP:P0}  edge_buf={EB:P0}",
         config.PositionStopLossPct, config.TakeProfitPrice, config.ExitEdgeBuffer);
@@ -196,11 +209,11 @@ if (snapshot is not null)
     // Clear a stale IsHalted flag if portfolio value is still healthy.
     // The bankroll-depleted halt is transient (positions will return USDC),
     // so don't carry it across restarts when portfolio_value > $1.
-    if (portfolio.IsHalted && portfolio.Bankroll + portfolio.TotalExposure() >= 1.0)
+    if (portfolio.IsHalted && portfolio.Equity() >= 1.0)
     {
         portfolio.IsHalted = false;
         log.LogInformation("Cleared stale IsHalted flag (portfolio value ${Pv:F2} is healthy)",
-            portfolio.Bankroll + portfolio.TotalExposure());
+            portfolio.Equity());
     }
     log.LogInformation("Resumed from saved state: ${Bankroll:F2} bankroll, {Positions} positions",
         portfolio.Bankroll, portfolio.Positions.Count);
@@ -221,6 +234,9 @@ httpClient.DefaultRequestHeaders.Add("Accept", "application/json");
 
 var scanner = new MarketScanner(config, httpClient, loggerFactory.CreateLogger<MarketScanner>());
 var estimator = new Estimator(config, httpClient, loggerFactory.CreateLogger<Estimator>());
+var kalshiShadow = config.KalshiShadowEnabled
+    ? new KalshiShadow(config, httpClient, loggerFactory.CreateLogger<KalshiShadow>())
+    : null;
 var notifier = new Notifier(config, loggerFactory.CreateLogger<Notifier>());
 
 // ── Validate Anthropic API key ───────────────────────────────────
@@ -256,6 +272,7 @@ using var cts = new CancellationTokenSource();
 
 ITrader trader;
 ClobApiClient? clobClient = null;
+LiveTrader? liveTrader = null;
 if (config.LiveTrading)
 {
     if (string.IsNullOrEmpty(config.PolymarketPrivateKey) && string.IsNullOrEmpty(config.PolymarketApiKey))
@@ -270,8 +287,13 @@ if (config.LiveTrading)
     // Ensure CTF conditional token approvals for exchange contracts (required for SELL orders)
     var approvalsChecked = await clobClient.EnsureConditionalTokenApprovalsAsync(cts.Token);
     Con(approvalsChecked ? "CTF token approvals verified" : "CTF token approval check skipped");
-    var liveTrader = new LiveTrader(clobClient, loggerFactory.CreateLogger<LiveTrader>());
+    liveTrader = new LiveTrader(clobClient, loggerFactory.CreateLogger<LiveTrader>(), config.DataDir);
     trader = liveTrader;
+    if (!await liveTrader.RecoverPendingOrdersAsync(portfolio, config.DataDir, cts.Token))
+    {
+        log.LogError("Pending live order recovery requires manual intervention; refusing to start");
+        return 2;
+    }
 
     // Sync bankroll from actual on-chain balance
     var initBal = await clobClient.GetBalanceAsync(cts.Token);
@@ -337,18 +359,18 @@ while (!cts.Token.IsCancellationRequested)
     }
 
     {
-        var pvLog = portfolio.Bankroll + portfolio.TotalExposure();
+        var pvLog = portfolio.Equity();
         log.LogInformation(
-            "Portfolio: ${Value:F2} (bankroll=${Bankroll:F2} + exposure=${Exposure:F2}) | {Positions} positions",
-            pvLog, portfolio.Bankroll, portfolio.TotalExposure(), portfolio.Positions.Count);
+            "Portfolio: ${Value:F2} (bankroll=${Bankroll:F2} + liquidation=${Liquidation:F2}) | {Positions} positions",
+            pvLog, portfolio.Bankroll, portfolio.LiquidationValue(), portfolio.Positions.Count);
     }
 
     if (console_)
     {
-        var pv = portfolio.Bankroll + portfolio.TotalExposure();
+        var pv = portfolio.Equity();
         Console.WriteLine($"\n{new string('\u2500', 60)}");
         Console.WriteLine($"[{Ts()}] CYCLE {cycle}");
-        Console.WriteLine($"  Portfolio: ${pv:F2} (bankroll=${portfolio.Bankroll:F2} + exposure=${portfolio.TotalExposure():F2})");
+        Console.WriteLine($"  Portfolio: ${pv:F2} (bankroll=${portfolio.Bankroll:F2} + liquidation=${portfolio.LiquidationValue():F2})");
         Console.WriteLine($"  Positions: {portfolio.Positions.Count} | API today: ${portfolio.DailyApiCost:F4} | total: ${portfolio.TotalApiCost:F4}");
         Console.WriteLine(new string('\u2500', 60));
     }
@@ -359,9 +381,11 @@ while (!cts.Token.IsCancellationRequested)
         log.LogInformation("Reviewing {Count} open positions...", portfolio.Positions.Count);
         Con($"REVIEW: checking {portfolio.Positions.Count} positions...");
 
-        var tokenIds = portfolio.Positions.Select(p => p.TokenId).ToList();
-        var prices = await scanner.GetMarketPricesAsync(tokenIds, cts.Token);
-        portfolio.UpdatePositionPrices(prices);
+        var positionQuotes = await scanner.GetSellQuotesAsync(portfolio.Positions, cts.Token);
+        portfolio.UpdatePositionQuotes(positionQuotes);
+        var prices = portfolio.Positions
+            .Where(pos => positionQuotes.ContainsKey(pos.TokenId))
+            .ToDictionary(pos => pos.TokenId, pos => pos.CurrentPrice);
 
         // Ghost check: verify actual on-chain balances (live trading only)
         if (clobClient is not null && portfolio.Positions.Count > 0)
@@ -410,9 +434,11 @@ while (!cts.Token.IsCancellationRequested)
                         (prices.TryGetValue(p.TokenId, out var pr) && pr < 0.01))
             .ToList();
         var resolvedCount = 0;
+        var heldResolutions = await scanner.CheckMarketResolutionsAsync(
+            maybeResolved.Select(pos => pos.ConditionId), cts.Token);
         foreach (var pos in maybeResolved)
         {
-            var resolution = await scanner.CheckMarketResolutionAsync(pos.ConditionId, cts.Token);
+            var resolution = heldResolutions.GetValueOrDefault(pos.ConditionId);
             if (resolution is null) continue;
 
             var won = pos.Side.ToString() == resolution["winning_side"];
@@ -465,6 +491,10 @@ while (!cts.Token.IsCancellationRequested)
                 ExitReason = $"resolved_{result.ToLowerInvariant()}",
             };
             PersistenceService.AppendTrade(resolveTrade, config.DataDir);
+            PersistenceService.AppendEstimateResolution(
+                pos.ConditionId,
+                resolution["winning_side"] == "YES" ? 1.0 : 0.0,
+                config.DataDir);
             PersistenceService.SaveSnapshot(portfolio.Snapshot(), config.DataDir);
             notifier.NotifyResolved(pos, won, pnl, portfolio);
         }
@@ -514,9 +544,9 @@ while (!cts.Token.IsCancellationRequested)
                 log.LogInformation("  STOP-LOSS CHECK: re-estimating {Question} before selling",
                     Truncate(es.Position.Question, 50));
                 var stopEstimate = await estimator.EstimateAsync(reviewMarket, cts.Token);
+                portfolio.RecordApiCostUsd(estimator.LastApiCostUsd);
                 if (stopEstimate is not null)
                 {
-                    portfolio.RecordApiCost(stopEstimate.InputTokensUsed, stopEstimate.OutputTokensUsed);
                     es.Position.FairEstimateAtEntry = stopEstimate.FairProbability;
                     var fairForSide = es.Position.Side == Side.YES
                         ? stopEstimate.FairProbability
@@ -563,8 +593,9 @@ while (!cts.Token.IsCancellationRequested)
                     }
                 }
 
-                PersistenceService.AppendTrade(sellTrade, config.DataDir);
                 PersistenceService.SaveSnapshot(portfolio.Snapshot(), config.DataDir);
+                PersistenceService.AppendTrade(sellTrade, config.DataDir);
+                liveTrader?.ConfirmAppliedOrders(portfolio);
                 exitsThisCycle++;
                 notifier.NotifySell(sellTrade, es.ExitReason, es.PnlPct, portfolio);
                 Con($"    {GREEN}SOLD OK{RESET}");
@@ -589,6 +620,21 @@ while (!cts.Token.IsCancellationRequested)
             if (cts.Token.IsCancellationRequested || portfolio.IsHalted)
                 break;
 
+            var topupQuotes = await scanner.GetTopupQuotesAsync(
+                tc.Position.TokenId, tc.TokensToBuy, tc.Position.Shares + tc.TokensToBuy, cts.Token);
+            if (topupQuotes is null || !topupQuotes.Value.Buy.Complete || !topupQuotes.Value.Sell.Complete)
+            {
+                log.LogInformation("  SKIP topup: fresh two-leg book depth unavailable for {Question}",
+                    Truncate(tc.Position.Question, 40));
+                continue;
+            }
+            tc.TopupCost = topupQuotes.Value.Buy.FilledValue;
+            tc.RecoveryValue = topupQuotes.Value.Sell.FilledValue;
+            tc.BuyVwap = topupQuotes.Value.Buy.Vwap;
+            tc.BuyLimitPrice = topupQuotes.Value.Buy.WorstPrice;
+            tc.SellVwap = topupQuotes.Value.Sell.Vwap;
+            tc.SellLimitPrice = topupQuotes.Value.Sell.WorstPrice;
+
             if (tc.TopupCost > portfolio.Bankroll)
             {
                 log.LogInformation(
@@ -599,13 +645,13 @@ while (!cts.Token.IsCancellationRequested)
             }
 
             log.LogInformation(
-                "  TOPUP+SELL ({Reason}): {Question} {Shares:F2} tokens, buy 5 more @ {Price:F4} (cost=${Cost:F2}, recover=${Recovery:F2})",
+                "  TOPUP+SELL ({Reason}): {Question} {Shares:F2} tokens, buy 5 more @ VWAP {Price:F4} (cost=${Cost:F2}, recover=${Recovery:F2})",
                 tc.ExitReason, Truncate(tc.Position.Question, 40), tc.Position.Shares,
-                tc.Position.CurrentPrice, tc.TopupCost, tc.RecoveryValue);
+                tc.BuyVwap, tc.TopupCost, tc.RecoveryValue);
             if (console_)
             {
                 Con($"  TOPUP ({tc.ExitReason}): {Truncate(tc.Position.Question, 40)}...");
-                Con($"    {tc.Position.Shares:F2} tokens + buy 5 @ {tc.Position.CurrentPrice:F4} (cost=${tc.TopupCost:F2})");
+                Con($"    {tc.Position.Shares:F2} tokens + buy 5 @ VWAP {tc.BuyVwap:F4} (cost=${tc.TopupCost:F2})");
             }
 
             var topupTrade = await trader.ExecuteTopupAndSellAsync(tc, portfolio, cts.Token);
@@ -621,8 +667,6 @@ while (!cts.Token.IsCancellationRequested)
                     }
                 }
 
-                PersistenceService.AppendTrade(topupTrade, config.DataDir);
-                PersistenceService.SaveSnapshot(portfolio.Snapshot(), config.DataDir);
                 exitsThisCycle++;
                 notifier.NotifyTopupSell(topupTrade, tc, portfolio);
                 Con($"    {GREEN}TOPUP+SELL OK (freed ${tc.RecoveryValue:F2}){RESET}");
@@ -632,10 +676,41 @@ while (!cts.Token.IsCancellationRequested)
                 notifier.NotifyTopupSellFail(tc, "order not filled");
                 Con($"    {RED}TOPUP+SELL FAILED{RESET}");
             }
+            PersistenceService.SaveSnapshot(portfolio.Snapshot(), config.DataDir);
+            if (topupTrade is not null) PersistenceService.AppendTrade(topupTrade, config.DataDir);
+            liveTrader?.ConfirmAppliedOrders(portfolio);
         }
 
         Con($"REVIEW: {exitsThisCycle} exits, bankroll=${portfolio.Bankroll:F2}, {portfolio.Positions.Count} positions remaining");
     }
+
+    // Resolve calibration outcomes for evaluated markets we never bought.
+    var heldConditionIds = portfolio.Positions.Select(position => position.ConditionId).ToHashSet();
+    var resolutionCandidates = PersistenceService.GetResolutionCandidates(
+        config.DataDir, config.ResolutionChecksPerCycle);
+    var watchedIds = resolutionCandidates.Where(id => !heldConditionIds.Contains(id)).ToList();
+    var watchedResolutions = await scanner.CheckMarketResolutionsAsync(watchedIds, cts.Token);
+    var deferredIds = new List<string>();
+    var resolvedIds = new List<string>();
+    foreach (var conditionId in resolutionCandidates)
+    {
+        if (heldConditionIds.Contains(conditionId))
+        {
+            deferredIds.Add(conditionId);
+            continue;
+        }
+        var watchedResolution = watchedResolutions.GetValueOrDefault(conditionId);
+        if (watchedResolution is null)
+        {
+            deferredIds.Add(conditionId);
+            continue;
+        }
+        PersistenceService.AppendEstimateResolution(conditionId,
+            watchedResolution["winning_side"] == "YES" ? 1.0 : 0.0, config.DataDir, removeWatch: false);
+        resolvedIds.Add(conditionId);
+    }
+    PersistenceService.UpdateResolutionWatchlist(
+        deferredIds, resolvedIds, config.DataDir, config.ResolutionRetryHours);
 
     if (!portfolio.CheckPortfolioRisk())
     {
@@ -668,13 +743,15 @@ while (!cts.Token.IsCancellationRequested)
         Con("SCAN: fetching markets...");
         var markets = await scanner.ScanAsync(cts.Token);
         var eligible = markets.Take(config.MarketsPerCycle).ToList();
+        if (kalshiShadow is not null)
+            await kalshiShadow.RefreshAsync(cts.Token);
 
         Con($"SCAN: {markets.Count} total, evaluating top {eligible.Count}");
 
         // Pre-check: skip estimation entirely if exposure is at the limit
         // Use bankroll (free cash) as base, not portfolio value, to avoid false blocks
         // when most capital is locked in positions (matches documented behaviour).
-        var pv = portfolio.Bankroll + portfolio.TotalExposure();
+        var pv = portfolio.Equity();
         var exposureRoom = config.MaxTotalExposurePct * pv - portfolio.TotalExposure();
         var minRealisticPosition = Math.Max(config.MinTradeUsd, config.MaxPositionPct * portfolio.Bankroll);
         // Also can't trade more than available cash
@@ -688,6 +765,7 @@ while (!cts.Token.IsCancellationRequested)
             Con($"EXPOSURE FULL: room=${exposureRoom:F2} < ${minRealisticPosition:F2}, skipping evaluations");
         }
 
+        var evaluatedMarkets = new List<MarketInfo>();
         for (var i = 0; i < eligible.Count; i++)
         {
             var market = eligible[i];
@@ -728,8 +806,7 @@ while (!cts.Token.IsCancellationRequested)
             }
 
             // Skip estimation if we can't afford the CLOB minimum for either side.
-            // CLOB enforces: 5 tokens minimum. Use aggressive price (+ 0.02 for 2-tick BUY aggression)
-            // so we don't call Claude only to fail at order execution.
+            // Conservative pre-book affordability check; the fresh book is checked after AI.
             var bestPrice = Math.Min(market.OutcomeYesPrice, market.OutcomeNoPrice);
             var minClobCost = Math.Max(5.0 * Math.Min(bestPrice + config.EntryPriceBuffer, 0.99), 1.0);
             if (portfolio.Bankroll < minClobCost)
@@ -745,19 +822,30 @@ while (!cts.Token.IsCancellationRequested)
             log.LogInformation("  {Idx} Evaluating: {Question}...", idx, Truncate(market.Question, 60));
             Con($"  {idx} EVAL: {Truncate(market.Question, 55)}...");
             var estimate = await estimator.EstimateAsync(market, cts.Token);
+            portfolio.RecordApiCostUsd(estimator.LastApiCostUsd);
             if (estimate is null)
             {
                 log.LogInformation("  {Idx} SKIP (estimation failed)", idx);
                 Con($"  {idx} -> {RED}FAILED{RESET}");
                 continue;
             }
+            evaluatedMarkets.Add(market);
 
             // Track provider spend against API budgets without changing trading bankroll.
-            portfolio.RecordApiCost(estimate.InputTokensUsed, estimate.OutputTokensUsed);
+            object? kalshiReference = null;
+            if (kalshiShadow is not null)
+            {
+                var lookup = await kalshiShadow.FindReferenceAsync(market, estimator, cts.Token);
+                kalshiReference = lookup.Reference;
+                portfolio.RecordApiCostUsd(lookup.ApiCostUsd);
+            }
 
             // Only halt if total portfolio value (not just free USDC) is depleted
-            if (portfolio.Bankroll + portfolio.TotalExposure() < 1.0)
+            if (portfolio.Equity() < 1.0)
             {
+                PersistenceService.AppendEstimateEvaluation(market, estimate, null,
+                    config.MultiProvider ? "multi" : config.AiProvider,
+                    "skip", "portfolio_dead", config.DataDir, kalshiReference, trackWatch: false);
                 log.LogWarning("Portfolio value < $1 — agent is dead");
                 Con($"{RED}DEAD: portfolio value depleted{RESET}");
                 portfolio.IsHalted = true;
@@ -792,8 +880,50 @@ while (!cts.Token.IsCancellationRequested)
                         idx, estimate.FairProbability, market.OutcomeYesPrice, bestEdge, config.MinEdge);
                     Con($"  {idx} -> {estimate.FairProbability:P0} (edge={bestEdge:+0.0%;-0.0%}) SKIP");
                 }
+                PersistenceService.AppendEstimateEvaluation(market, estimate, null,
+                    config.MultiProvider ? "multi" : config.AiProvider,
+                    "skip", bestEdge > config.MinEdge ? "kelly_or_clob_min" : "no_net_edge", config.DataDir, kalshiReference, trackWatch: false);
                 continue;
             }
+
+            // AI estimation may take tens of seconds. Validate the candidate
+            // against a fresh, full-size executable ask quote before risk/execution.
+            var tokenId = signal.Side == Side.YES ? market.TokenIdYes : market.TokenIdNo;
+            var executionQuote = await scanner.GetBuyQuoteAsync(tokenId, signal.PositionSizeUsd, cts.Token);
+            if (!executionQuote.HasValue)
+            {
+                log.LogInformation("  {Idx} SKIP (fresh CLOB book unavailable)", idx);
+                Con($"  {idx} -> {YELLOW}NO FRESH BOOK{RESET}");
+                PersistenceService.AppendEstimateEvaluation(market, estimate, signal,
+                    config.MultiProvider ? "multi" : config.AiProvider,
+                    "skip", "no_fresh_book", config.DataDir, kalshiReference, trackWatch: false);
+                continue;
+            }
+            if (!executionQuote.Value.Complete)
+            {
+                log.LogInformation(
+                    "  {Idx} SKIP (insufficient ask depth): requested=${Requested:F2}, available=${Available:F2}",
+                    idx, signal.PositionSizeUsd, executionQuote.Value.FilledValue);
+                Con($"  {idx} -> {YELLOW}THIN BOOK{RESET}");
+                PersistenceService.AppendEstimateEvaluation(market, estimate, signal,
+                    config.MultiProvider ? "multi" : config.AiProvider,
+                    "skip", "insufficient_book_depth", config.DataDir, kalshiReference, trackWatch: false);
+                continue;
+            }
+
+            var repriced = portfolio.RepriceSignal(signal, executionQuote.Value.Vwap,
+                executionQuote.Value.WorstPrice, executionQuote.Value.AgeSeconds);
+            if (repriced is null)
+            {
+                log.LogInformation("  {Idx} SKIP (edge disappeared at VWAP {Vwap:F3})",
+                    idx, executionQuote.Value.Vwap);
+                Con($"  {idx} -> edge disappeared at book VWAP");
+                PersistenceService.AppendEstimateEvaluation(market, estimate, signal,
+                    config.MultiProvider ? "multi" : config.AiProvider,
+                    "skip", "edge_disappeared_at_vwap", config.DataDir, kalshiReference, trackWatch: false);
+                continue;
+            }
+            signal = repriced;
 
             // Risk check
             if (!portfolio.CheckRisk(signal))
@@ -802,18 +932,21 @@ while (!cts.Token.IsCancellationRequested)
                     "  {Idx} SKIP (risk limit): {Side} {Question} ${Size:F2}",
                     idx, signal.Side, Truncate(market.Question, 40), signal.PositionSizeUsd);
                 Con($"  {idx} -> {estimate.FairProbability:P0} {YELLOW}RISK BLOCKED{RESET}");
+                PersistenceService.AppendEstimateEvaluation(market, estimate, signal,
+                    config.MultiProvider ? "multi" : config.AiProvider,
+                    "skip", "risk_blocked", config.DataDir, kalshiReference, trackWatch: false);
                 continue;
             }
 
             // Execute
             log.LogInformation(
-                "  {Idx} >>> BUYING {Side} {Question} ${Size:F2} @ {Price:F3} (exec~{Exec:F3})",
+                "  {Idx} >>> BUYING {Side} {Question} ${Size:F2} @ book VWAP {Exec:F3} (limit {Limit:F3})",
                 idx, signal.Side, Truncate(market.Question, 50), signal.PositionSizeUsd,
-                signal.MarketPrice, signal.ExecutionPrice);
+                signal.ExecutionPrice, signal.LimitPrice);
             if (console_)
             {
                 Con($"  {idx} -> {estimate.FairProbability:P0} edge={signal.Edge:P1}");
-                Con($"  {idx} >>> BUY {signal.Side} ${signal.PositionSizeUsd:F2} @ ~{signal.ExecutionPrice:F3}...");
+                Con($"  {idx} >>> BUY {signal.Side} ${signal.PositionSizeUsd:F2} @ VWAP {signal.ExecutionPrice:F3}...");
             }
 
             var trade = await trader.ExecuteAsync(signal, portfolio, cts.Token);
@@ -840,8 +973,9 @@ while (!cts.Token.IsCancellationRequested)
                     }
                 }
 
-                PersistenceService.AppendTrade(trade, config.DataDir);
                 PersistenceService.SaveSnapshot(portfolio.Snapshot(), config.DataDir);
+                PersistenceService.AppendTrade(trade, config.DataDir);
+                liveTrader?.ConfirmAppliedOrders(portfolio);
                 tradesThisCycle++;
                 notifier.NotifyTrade(trade, signal, portfolio);
 
@@ -851,15 +985,22 @@ while (!cts.Token.IsCancellationRequested)
                     signal.Edge, signal.ExpectedValue);
 
                 Con($"  {idx} {GREEN}TRADE OK{RESET} (EV=${signal.ExpectedValue:F2})");
+                PersistenceService.AppendEstimateEvaluation(market, estimate, signal,
+                    config.MultiProvider ? "multi" : config.AiProvider,
+                    "buy", "executed", config.DataDir, kalshiReference, trackWatch: false);
             }
             else
             {
                 log.LogWarning("  {Idx} TRADE FAILED: order execution error", idx);
                 notifier.NotifyBuyFail(market, signal, "order execution error");
                 Con($"  {idx} {RED}TRADE FAILED{RESET}");
+                PersistenceService.AppendEstimateEvaluation(market, estimate, signal,
+                    config.MultiProvider ? "multi" : config.AiProvider,
+                    "skip", "execution_failed", config.DataDir, kalshiReference, trackWatch: false);
             }
         }
 
+        PersistenceService.TrackResolutions(evaluatedMarkets, config.DataDir);
         } // end else (scan block)
 
         // Cycle summary
@@ -871,7 +1012,7 @@ while (!cts.Token.IsCancellationRequested)
 
         if (console_)
         {
-            var pvSummary = portfolio.Bankroll + portfolio.TotalExposure();
+            var pvSummary = portfolio.Equity();
             Console.WriteLine($"\n[{Ts()}] SUMMARY: {tradesThisCycle} trades this cycle");
             Console.WriteLine($"  Portfolio: ${pvSummary:F2} | Bankroll: ${portfolio.Bankroll:F2} | Exposure: ${portfolio.TotalExposure():F2}");
             Console.WriteLine($"  Positions: {portfolio.Positions.Count} | API today: ${portfolio.DailyApiCost:F4} | total: ${portfolio.TotalApiCost:F4} | PnL: ${portfolio.TotalRealizedPnl:+0.00;-0.00}");
@@ -926,7 +1067,7 @@ log.LogInformation(
 
 if (console_)
 {
-    var pv = portfolio.Bankroll + portfolio.TotalExposure();
+    var pv = portfolio.Equity();
     Console.WriteLine($"\n{new string('=', 60)}");
     Console.WriteLine($"[{Ts()}] BOT STOPPED");
     Console.WriteLine($"  Final portfolio: ${pv:F2} | Bankroll: ${portfolio.Bankroll:F2}");
@@ -987,7 +1128,7 @@ static MarketInfo BuildReviewMarket(Position pos)
         BestAsk = 0,
         Spread = 0,
         Category = pos.Category,
-        EventTitle = pos.Question,
+        EventTitle = string.IsNullOrWhiteSpace(pos.EventTitle) ? pos.Question : pos.EventTitle,
         Description = "Position review re-estimate before stop-loss exit.",
     };
 }

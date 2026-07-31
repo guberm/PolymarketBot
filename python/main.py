@@ -8,6 +8,7 @@ Usage:
 """
 
 import argparse
+import atexit
 import logging
 import signal
 import sys
@@ -20,11 +21,22 @@ from config import BotConfig
 from logger_setup import setup_logging
 from market_scanner import MarketScanner
 from estimator import Estimator
+from kalshi_shadow import KalshiShadow
 from models import MarketInfo, Side, Trade, TradeAction
 from notifier import Notifier
 from portfolio import Portfolio
 from trader import PaperTrader, LiveTrader
-from persistence import load_snapshot, save_snapshot, append_trade
+from persistence import (
+    append_estimate_evaluation,
+    append_estimate_resolution,
+    append_trade,
+    get_resolution_candidates,
+    load_snapshot,
+    save_snapshot,
+    track_resolutions,
+    update_resolution_watchlist,
+)
+from runtime_safety import InstanceLock
 
 log = logging.getLogger("bot.main")
 
@@ -67,7 +79,7 @@ def build_review_market(pos) -> MarketInfo:
         spread=0.0,
         end_date="",
         category=pos.category,
-        event_title=pos.question,
+        event_title=pos.event_title or pos.question,
         description="Position review re-estimate before stop-loss exit.",
     )
 
@@ -108,6 +120,7 @@ def main():
     parser.add_argument("--max-position-pct", type=float, help="Max %% of bankroll per position (e.g. 0.15)")
     parser.add_argument("--max-total-exposure-pct", type=float, help="Max %% of bankroll in open positions (e.g. 0.90)")
     parser.add_argument("--max-category-exposure-pct", type=float, help="Max %% per category (e.g. 0.50)")
+    parser.add_argument("--max-event-exposure-pct", type=float, help="Max %% per event (e.g. 0.30)")
     parser.add_argument("--daily-stop-loss-pct", type=float, help="Halt if daily loss exceeds this %% (e.g. 0.20)")
     parser.add_argument("--max-drawdown-pct", type=float, help="Halt if drawdown exceeds this %% (e.g. 0.50)")
     parser.add_argument("--max-concurrent-positions", type=int, help="Max open positions (e.g. 20)")
@@ -124,6 +137,8 @@ def main():
         config.max_total_exposure_pct = args.max_total_exposure_pct
     if args.max_category_exposure_pct is not None:
         config.max_category_exposure_pct = args.max_category_exposure_pct
+    if args.max_event_exposure_pct is not None:
+        config.max_event_exposure_pct = args.max_event_exposure_pct
     if args.daily_stop_loss_pct is not None:
         config.daily_stop_loss_pct = args.daily_stop_loss_pct
     if args.max_drawdown_pct is not None:
@@ -131,6 +146,11 @@ def main():
     if args.max_concurrent_positions is not None:
         config.max_concurrent_positions = args.max_concurrent_positions
     setup_logging(config.data_dir, verbose=args.verbose)
+    instance_lock = InstanceLock(config.data_dir)
+    if not instance_lock.acquire():
+        log.error(f"Another bot instance owns {instance_lock.path}; refusing to start")
+        return 2
+    atexit.register(instance_lock.release)
 
     mode = "LIVE" if config.live_trading else "PAPER"
     log.info("=" * 60)
@@ -141,6 +161,15 @@ def main():
     _mode_label = "multi" if config.multi_provider else config.ai_provider
     log.info(f"Ensemble: {config.ensemble_size}x [{_mode_label}]")
     log.info(f"API budget: cycle=${config.max_cycle_api_cost_usd:.2f}, daily=${config.max_daily_api_cost_usd:.2f}")
+    log.info(
+        f"Risk caps: event={config.max_event_exposure_pct:.0%}, "
+        f"category={config.max_category_exposure_pct:.0%}"
+    )
+    log.info(
+        f"Quote safety: grace={config.quote_failure_grace_cycles} cycles, "
+        f"stale haircut={config.stale_quote_haircut_pct:.0%} | "
+        f"Resolution watch: {config.resolution_checks_per_cycle}/cycle, retry={config.resolution_retry_hours:g}h"
+    )
     if config.live_trading and not config.allow_unsafe_risk and (
         effective_kelly_fraction(config) != config.kelly_fraction
         or effective_max_position_pct(config) != config.max_position_pct
@@ -184,9 +213,9 @@ def main():
     portfolio = Portfolio(config, snapshot)
     if snapshot:
         # Clear a stale IsHalted flag if portfolio value is still healthy.
-        if portfolio.is_halted and portfolio.bankroll + portfolio.total_exposure() >= 1.0:
+        if portfolio.is_halted and portfolio.equity() >= 1.0:
             portfolio.is_halted = False
-            log.info(f"Cleared stale is_halted flag (portfolio value ${portfolio.bankroll + portfolio.total_exposure():.2f} is healthy)")
+            log.info(f"Cleared stale is_halted flag (portfolio equity ${portfolio.equity():.2f} is healthy)")
         log.info(f"Resumed from saved state: ${portfolio.bankroll:.2f} bankroll, {len(portfolio.positions)} positions")
         if con:
             print(f"[{ts()}] RESUME: ${portfolio.bankroll:.2f} bankroll, {len(portfolio.positions)} positions, ${portfolio.total_exposure():.2f} exposure")
@@ -199,6 +228,7 @@ def main():
 
     scanner = MarketScanner(config)
     estimator = Estimator(config)
+    kalshi_shadow = KalshiShadow(config) if config.kalshi_shadow_enabled else None
     notifier = Notifier(config)
 
     if config.multi_provider:
@@ -225,6 +255,9 @@ def main():
             log.error("POLYMARKET_PRIVATE_KEY or POLYMARKET_API_KEY required for live trading")
             sys.exit(1)
         trader = LiveTrader(config)
+        if not trader.recover_pending_orders(portfolio):
+            log.error("Pending live order recovery requires manual intervention; refusing to start")
+            return 2
 
         # Sync bankroll from actual on-chain balance
         init_bal = trader.get_balance()
@@ -273,6 +306,7 @@ def main():
             notifier.notify_daily_reset(portfolio)
 
         log.info(f"--- Cycle {cycle} ---")
+        estimator.reset_cycle()
         cycle_api_cost_start = portfolio.total_api_cost
 
         # Sync on-chain USDC balance at start of each cycle (live trading only)
@@ -281,18 +315,18 @@ def main():
             if cycle_bal is not None:
                 portfolio.sync_balance(cycle_bal)
 
-        pv = portfolio.bankroll + portfolio.total_exposure()
+        pv = portfolio.equity()
         log.info(
             f"Portfolio: ${pv:.2f} "
-            f"(bankroll=${portfolio.bankroll:.2f} + exposure=${portfolio.total_exposure():.2f}) | "
+            f"(bankroll=${portfolio.bankroll:.2f} + liquidation=${portfolio.liquidation_value():.2f}) | "
             f"{len(portfolio.positions)} positions"
         )
 
         if con:
-            pv = portfolio.bankroll + portfolio.total_exposure()
+            pv = portfolio.equity()
             print(f"\n{'─'*60}")
             print(f"[{ts()}] CYCLE {cycle}")
-            print(f"  Portfolio: ${pv:.2f} (bankroll=${portfolio.bankroll:.2f} + exposure=${portfolio.total_exposure():.2f})")
+            print(f"  Portfolio: ${pv:.2f} (bankroll=${portfolio.bankroll:.2f} + liquidation=${portfolio.liquidation_value():.2f})")
             print(f"  Positions: {len(portfolio.positions)} | API today: ${portfolio.daily_api_cost:.4f} | total: ${portfolio.total_api_cost:.4f}")
             print(f"{'─'*60}")
 
@@ -302,10 +336,14 @@ def main():
             if con:
                 print(f"[{ts()}] REVIEW: checking {len(portfolio.positions)} positions...")
 
-            # Fetch current prices for all held tokens
-            token_ids = [p.token_id for p in portfolio.positions]
-            prices = scanner.get_market_prices(token_ids)
-            portfolio.update_position_prices(prices)
+            # Mark positions at full-size executable bid value, not midpoint.
+            position_quotes = scanner.get_sell_quotes(portfolio.positions)
+            portfolio.update_position_quotes(position_quotes)
+            prices = {
+                pos.token_id: pos.current_price
+                for pos in portfolio.positions
+                if pos.token_id in position_quotes
+            }
 
             # Ghost check: verify actual on-chain balances (live trading only)
             if isinstance(trader, LiveTrader) and portfolio.positions:
@@ -348,8 +386,11 @@ def main():
                 if p.token_id not in prices or prices.get(p.token_id, 0) < 0.01
             ]
             resolved_count = 0
+            held_resolutions = scanner.check_market_resolutions(
+                [pos.condition_id for pos in maybe_resolved]
+            )
             for pos in maybe_resolved:
-                resolution = scanner.check_market_resolution(pos.condition_id)
+                resolution = held_resolutions.get(pos.condition_id)
                 if resolution is None:
                     continue
                 won = (pos.side.value == resolution["winning_side"])
@@ -379,6 +420,11 @@ def main():
                     exit_reason=f"resolved_{result.lower()}",
                 )
                 append_trade(trade, config.data_dir)
+                append_estimate_resolution(
+                    pos.condition_id,
+                    1.0 if resolution["winning_side"] == "YES" else 0.0,
+                    config.data_dir,
+                )
                 save_snapshot(portfolio.snapshot(), config.data_dir)
                 notifier.notify_resolved(pos, won, pnl, portfolio)
 
@@ -421,8 +467,8 @@ def main():
                     review_market = build_review_market(es.position)
                     log.info(f"  STOP-LOSS CHECK: re-estimating {es.position.question[:50]}... before selling")
                     stop_estimate = estimator.estimate(review_market)
+                    portfolio.record_api_cost_usd(estimator.last_api_cost_usd)
                     if stop_estimate is not None:
-                        portfolio.record_api_cost(stop_estimate.input_tokens_used, stop_estimate.output_tokens_used)
                         es.position.fair_estimate_at_entry = stop_estimate.fair_probability
                         fair_for_side = (
                             stop_estimate.fair_probability
@@ -463,8 +509,10 @@ def main():
                         if sell_bal is not None:
                             portfolio.sync_balance(sell_bal)
                             log.info(f"On-chain USDC after sell: ${sell_bal:.2f}")
-                    append_trade(trade, config.data_dir)
                     save_snapshot(portfolio.snapshot(), config.data_dir)
+                    append_trade(trade, config.data_dir)
+                    if isinstance(trader, LiveTrader):
+                        trader.confirm_applied_orders(portfolio)
                     exits_this_cycle += 1
                     notifier.notify_sell(trade, es.exit_reason, es.pnl_pct, portfolio)
                     if con:
@@ -485,6 +533,20 @@ def main():
                 if not running or portfolio.is_halted:
                     break
 
+                topup_quotes = scanner.get_topup_quotes(
+                    tc.position.token_id, tc.tokens_to_buy, tc.position.shares + tc.tokens_to_buy
+                )
+                if topup_quotes is None or not all(quote.complete for quote in topup_quotes):
+                    log.info(f"  SKIP topup: fresh two-leg book depth unavailable for {tc.position.question[:40]}...")
+                    continue
+                buy_quote, sell_quote = topup_quotes
+                tc.topup_cost = buy_quote.filled_value
+                tc.recovery_value = sell_quote.filled_value
+                tc.buy_vwap = buy_quote.vwap
+                tc.buy_limit_price = buy_quote.worst_price
+                tc.sell_vwap = sell_quote.vwap
+                tc.sell_limit_price = sell_quote.worst_price
+
                 if tc.topup_cost > portfolio.bankroll:
                     log.info(
                         f"  SKIP topup: {tc.position.question[:40]}... "
@@ -499,7 +561,7 @@ def main():
 
                 log.info(
                     f"  TOPUP+SELL ({tc.exit_reason}): {tc.position.question[:40]}... "
-                    f"{tc.position.shares:.2f} tokens, buy 5 more @ {tc.position.current_price:.4f} "
+                    f"{tc.position.shares:.2f} tokens, buy 5 more @ VWAP {tc.buy_vwap:.4f} "
                     f"(cost=${tc.topup_cost:.2f}, recover=${tc.recovery_value:.2f})"
                 )
                 if con:
@@ -507,14 +569,16 @@ def main():
                         f"[{ts()}]   TOPUP ({tc.exit_reason}): {tc.position.question[:40]}..."
                     )
                     print(
-                        f"[{ts()}]     {tc.position.shares:.2f} tokens + buy 5 @ {tc.position.current_price:.4f} "
+                        f"[{ts()}]     {tc.position.shares:.2f} tokens + buy 5 @ VWAP {tc.buy_vwap:.4f} "
                         f"(cost=${tc.topup_cost:.2f})"
                     )
 
                 trade = trader.execute_topup_and_sell(tc, portfolio)
+                save_snapshot(portfolio.snapshot(), config.data_dir)
+                if isinstance(trader, LiveTrader):
+                    trader.confirm_applied_orders(portfolio)
                 if trade:
                     append_trade(trade, config.data_dir)
-                    save_snapshot(portfolio.snapshot(), config.data_dir)
                     exits_this_cycle += 1
                     notifier.notify_topup_sell(trade, tc, portfolio)
                     if con:
@@ -530,6 +594,34 @@ def main():
                     f"bankroll=${portfolio.bankroll:.2f}, "
                     f"{len(portfolio.positions)} positions remaining"
                 )
+
+        # Resolve calibration outcomes for evaluated markets we never bought.
+        held_condition_ids = {position.condition_id for position in portfolio.positions}
+        resolution_candidates = get_resolution_candidates(
+            config.data_dir, config.resolution_checks_per_cycle
+        )
+        watched_ids = [cid for cid in resolution_candidates if cid not in held_condition_ids]
+        watched_resolutions = scanner.check_market_resolutions(watched_ids)
+        deferred_ids = []
+        resolved_ids = []
+        for condition_id in resolution_candidates:
+            if condition_id in held_condition_ids:
+                deferred_ids.append(condition_id)
+                continue
+            resolution = watched_resolutions.get(condition_id)
+            if resolution is None:
+                deferred_ids.append(condition_id)
+                continue
+            append_estimate_resolution(
+                condition_id,
+                1.0 if resolution["winning_side"] == "YES" else 0.0,
+                config.data_dir,
+                remove_watch=False,
+            )
+            resolved_ids.append(condition_id)
+        update_resolution_watchlist(
+            deferred_ids, resolved_ids, config.data_dir, config.resolution_retry_hours
+        )
 
         if not portfolio.check_portfolio_risk():
             log.warning("Portfolio risk limit reached — stopping before market scan")
@@ -561,13 +653,15 @@ def main():
                     print(f"[{ts()}] SCAN: fetching markets...")
                 markets = scanner.scan()
                 eligible = markets[:config.markets_per_cycle]
+                if kalshi_shadow:
+                    kalshi_shadow.refresh()
 
                 if con:
                     print(f"[{ts()}] SCAN: {len(markets)} total, evaluating top {len(eligible)}")
 
             # Pre-check: skip estimation entirely if exposure is at the limit
-            # Use portfolio value (bankroll + exposure) as base, not just bankroll
-            pv = portfolio.bankroll + portfolio.total_exposure()
+            # Use liquidation equity as the exposure-limit denominator.
+            pv = portfolio.equity()
             exposure_room = config.max_total_exposure_pct * pv - portfolio.total_exposure()
             min_realistic_position = config.max_position_pct * pv * 0.5
             # Also can't trade more than available cash
@@ -580,6 +674,7 @@ def main():
                 if con:
                     print(f"[{ts()}] EXPOSURE FULL: room=${exposure_room:.2f} < ${min_realistic_position:.2f}, skipping evaluations")
 
+            evaluated_markets = []
             for i, market in enumerate(eligible, 1):
                 if not running or portfolio.is_halted:
                     break
@@ -622,8 +717,7 @@ def main():
                     break
 
                 # Skip estimation if we can't afford the CLOB minimum for either side.
-                # Use effective price (+ 0.02 for 2-tick BUY aggression) so we don't call Claude
-                # only to fail at order execution when the actual order price exceeds our cash.
+                # Conservative pre-book affordability check; the fresh book is checked after AI.
                 best_price = min(market.outcome_yes_price, market.outcome_no_price)
                 min_clob_cost = max(5.0 * min(best_price + config.entry_price_buffer, 0.99), 1.0)
                 if portfolio.bankroll < min_clob_cost:
@@ -643,17 +737,28 @@ def main():
                 if con:
                     print(f"[{ts()}]   [{i:>2}/{len(eligible)}] EVAL: {market.question[:55]}...")
                 estimate = estimator.estimate(market)
+                portfolio.record_api_cost_usd(estimator.last_api_cost_usd)
                 if estimate is None:
                     log.info(f"  [{i}/{len(eligible)}] SKIP (estimation failed)")
                     if con:
                         print(f"[{ts()}]   [{i:>2}/{len(eligible)}] -> {RED}FAILED{RESET}")
                     continue
+                evaluated_markets.append(market)
 
                 # Track provider spend against API budgets without changing trading bankroll.
-                portfolio.record_api_cost(estimate.input_tokens_used, estimate.output_tokens_used)
+                kalshi_reference = None
+                if kalshi_shadow:
+                    kalshi_reference, verify_cost = kalshi_shadow.find_reference(market, estimator)
+                    portfolio.record_api_cost_usd(verify_cost)
 
                 # Only halt if total portfolio value is truly depleted
-                if portfolio.bankroll + portfolio.total_exposure() < 1.0:
+                if portfolio.equity() < 1.0:
+                    append_estimate_evaluation(
+                        market, estimate, config.data_dir,
+                        "multi" if config.multi_provider else config.ai_provider,
+                        "skip", "portfolio_dead", kalshi_reference=kalshi_reference,
+                        track_watch=False,
+                    )
                     log.warning("Portfolio value < $1 — agent is dead")
                     if con:
                         print(f"[{ts()}] {RED}DEAD: portfolio value depleted{RESET}")
@@ -673,7 +778,62 @@ def main():
                     )
                     if con:
                         print(f"[{ts()}]   [{i:>2}/{len(eligible)}] -> {estimate.fair_probability:.0%} (edge={best_edge:+.1%}) SKIP")
+                    append_estimate_evaluation(
+                        market, estimate, config.data_dir,
+                        "multi" if config.multi_provider else config.ai_provider,
+                        "skip", "kelly_or_clob_min" if best_edge > config.min_edge else "no_net_edge",
+                        kalshi_reference=kalshi_reference, track_watch=False,
+                    )
                     continue
+
+                # The estimate may take tens of seconds. Re-price the provisional
+                # signal from the current ask book and reject stale/thin books.
+                token_id = market.token_id_yes if signal_obj.side == Side.YES else market.token_id_no
+                execution_quote = scanner.get_buy_quote(token_id, signal_obj.position_size_usd)
+                if execution_quote is None:
+                    log.info(f"  [{i}/{len(eligible)}] SKIP (fresh CLOB book unavailable)")
+                    if con:
+                        print(f"[{ts()}]   [{i:>2}/{len(eligible)}] -> {YELLOW}NO FRESH BOOK{RESET}")
+                    append_estimate_evaluation(
+                        market, estimate, config.data_dir,
+                        "multi" if config.multi_provider else config.ai_provider,
+                        "skip", "no_fresh_book", signal_obj, kalshi_reference, False,
+                    )
+                    continue
+                if not execution_quote.complete:
+                    log.info(
+                        f"  [{i}/{len(eligible)}] SKIP (insufficient ask depth): "
+                        f"requested=${signal_obj.position_size_usd:.2f}, available=${execution_quote.filled_value:.2f}"
+                    )
+                    if con:
+                        print(f"[{ts()}]   [{i:>2}/{len(eligible)}] -> {YELLOW}THIN BOOK{RESET}")
+                    append_estimate_evaluation(
+                        market, estimate, config.data_dir,
+                        "multi" if config.multi_provider else config.ai_provider,
+                        "skip", "insufficient_book_depth", signal_obj, kalshi_reference, False,
+                    )
+                    continue
+
+                repriced = portfolio.reprice_signal(
+                    signal_obj,
+                    execution_quote.vwap,
+                    execution_quote.worst_price,
+                    execution_quote.age_seconds,
+                )
+                if repriced is None:
+                    log.info(
+                        f"  [{i}/{len(eligible)}] SKIP (edge disappeared at VWAP "
+                        f"{execution_quote.vwap:.3f})"
+                    )
+                    if con:
+                        print(f"[{ts()}]   [{i:>2}/{len(eligible)}] -> edge disappeared at book VWAP")
+                    append_estimate_evaluation(
+                        market, estimate, config.data_dir,
+                        "multi" if config.multi_provider else config.ai_provider,
+                        "skip", "edge_disappeared_at_vwap", signal_obj, kalshi_reference, False,
+                    )
+                    continue
+                signal_obj = repriced
 
                 # Risk check
                 if not portfolio.check_risk(signal_obj):
@@ -684,17 +844,22 @@ def main():
                     )
                     if con:
                         print(f"[{ts()}]   [{i:>2}/{len(eligible)}] -> {estimate.fair_probability:.0%} {YELLOW}RISK BLOCKED{RESET}")
+                    append_estimate_evaluation(
+                        market, estimate, config.data_dir,
+                        "multi" if config.multi_provider else config.ai_provider,
+                        "skip", "risk_blocked", signal_obj, kalshi_reference, False,
+                    )
                     continue
 
                 # Execute
                 log.info(
                     f"  [{i}/{len(eligible)}] >>> BUYING {signal_obj.side.value} "
                     f"{market.question[:50]}... ${signal_obj.position_size_usd:.2f} "
-                    f"@ {signal_obj.market_price:.3f} (exec~{signal_obj.execution_price:.3f})"
+                    f"@ book VWAP {signal_obj.execution_price:.3f} (limit {signal_obj.limit_price:.3f})"
                 )
                 if con:
                     print(f"[{ts()}]   [{i:>2}/{len(eligible)}] -> {estimate.fair_probability:.0%} edge={signal_obj.edge:.1%}")
-                    print(f"[{ts()}]   [{i:>2}/{len(eligible)}] >>> BUY {signal_obj.side.value} ${signal_obj.position_size_usd:.2f} @ ~{signal_obj.execution_price:.3f}...")
+                    print(f"[{ts()}]   [{i:>2}/{len(eligible)}] >>> BUY {signal_obj.side.value} ${signal_obj.position_size_usd:.2f} @ VWAP {signal_obj.execution_price:.3f}...")
 
                 trade = trader.execute(signal_obj, portfolio)
                 if trade:
@@ -710,8 +875,10 @@ def main():
                             if con:
                                 print(f"[{ts()}]   USDC balance: ${bal:.2f}")
 
-                    append_trade(trade, config.data_dir)
                     save_snapshot(portfolio.snapshot(), config.data_dir)
+                    append_trade(trade, config.data_dir)
+                    if isinstance(trader, LiveTrader):
+                        trader.confirm_applied_orders(portfolio)
                     trades_this_cycle += 1
                     notifier.notify_trade(trade, signal_obj, portfolio)
 
@@ -720,11 +887,23 @@ def main():
                         f"${trade.size_usd:.2f} @ {trade.price:.3f} "
                         f"(edge={signal_obj.edge:.1%}, EV=${signal_obj.expected_value:.2f})"
                     )
+                    append_estimate_evaluation(
+                        market, estimate, config.data_dir,
+                        "multi" if config.multi_provider else config.ai_provider,
+                        "buy", "executed", signal_obj, kalshi_reference, False,
+                    )
                 else:
                     log.warning(f"  [{i}/{len(eligible)}] TRADE FAILED: order execution error")
                     notifier.notify_buy_fail(market, signal_obj, "order execution error")
                     if con:
                         print(f"[{ts()}]   [{i:>2}/{len(eligible)}] {RED}TRADE FAILED{RESET}")
+                    append_estimate_evaluation(
+                        market, estimate, config.data_dir,
+                        "multi" if config.multi_provider else config.ai_provider,
+                        "skip", "execution_failed", signal_obj, kalshi_reference, False,
+                    )
+
+            track_resolutions(evaluated_markets, config.data_dir)
 
             # Cycle summary
             log.info(
@@ -738,7 +917,7 @@ def main():
             )
 
             if con:
-                pv = portfolio.bankroll + portfolio.total_exposure()
+                pv = portfolio.equity()
                 print(f"\n[{ts()}] SUMMARY: {trades_this_cycle} trades this cycle")
                 print(f"  Portfolio: ${pv:.2f} | Bankroll: ${portfolio.bankroll:.2f} | Exposure: ${portfolio.total_exposure():.2f}")
                 print(f"  Positions: {len(portfolio.positions)} | API today: ${portfolio.daily_api_cost:.4f} | total: ${portfolio.total_api_cost:.4f} | PnL: ${portfolio.total_realized_pnl:+.2f}")
@@ -777,14 +956,15 @@ def main():
         f"Realized PnL: ${portfolio.total_realized_pnl:+.2f}"
     )
     if con:
-        pv = portfolio.bankroll + portfolio.total_exposure()
+        pv = portfolio.equity()
         print(f"\n{'='*60}")
         print(f"[{ts()}] BOT STOPPED")
         print(f"  Final portfolio: ${pv:.2f} | Bankroll: ${portfolio.bankroll:.2f}")
         print(f"  Total trades: {portfolio.total_trades} | API cost: ${portfolio.total_api_cost:.4f}")
         print(f"  Realized PnL: ${portfolio.total_realized_pnl:+.2f}")
         print(f"{'='*60}")
+    instance_lock.release()
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

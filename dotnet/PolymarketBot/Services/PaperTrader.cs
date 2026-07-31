@@ -24,7 +24,10 @@ public sealed class PaperTrader : ITrader
             CurrentPrice = price,
             UnrealizedPnl = 0.0,
             Category = market.Category,
+            EventTitle = market.EventTitle,
             FairEstimateAtEntry = signal.Estimate.FairProbability,
+            LiquidationLimitPrice = signal.LimitPrice,
+            QuoteAgeSeconds = signal.QuoteAgeSeconds,
         };
         portfolio.OpenPosition(position);
 
@@ -43,6 +46,8 @@ public sealed class PaperTrader : ITrader
             Rationale = signal.Estimate.ReasoningSummary,
             EdgeAtEntry = signal.Edge,
             KellyAtEntry = signal.KellyFraction,
+            QuotedVwap = signal.ExecutionPrice,
+            FillStatus = "MATCHED",
         };
 
         return Task.FromResult<Trade?>(trade);
@@ -51,6 +56,8 @@ public sealed class PaperTrader : ITrader
     public Task<Trade?> ExecuteSellAsync(ExitSignal exitSignal, Portfolio portfolio, CancellationToken ct = default)
     {
         var pos = exitSignal.Position;
+        if (!pos.BookDepthComplete || pos.LiquidationLimitPrice <= 0)
+            return Task.FromResult<Trade?>(null);
         var pnl = portfolio.ClosePosition(pos.ConditionId, exitSignal.CurrentPrice);
 
         var trade = new Trade
@@ -67,6 +74,8 @@ public sealed class PaperTrader : ITrader
             IsPaper = true,
             Rationale = $"Exit: {exitSignal.ExitReason}",
             ExitReason = exitSignal.ExitReason,
+            QuotedVwap = exitSignal.CurrentPrice,
+            FillStatus = "MATCHED",
         };
 
         return Task.FromResult<Trade?>(trade);
@@ -75,10 +84,12 @@ public sealed class PaperTrader : ITrader
     public Task<Trade?> ExecuteTopupAndSellAsync(TopupCandidate candidate, Portfolio portfolio, CancellationToken ct = default)
     {
         var pos = candidate.Position;
-        var price = pos.CurrentPrice;
+        var price = candidate.SellVwap;
 
         // Step 1: simulate BUY 5 tokens
         portfolio.AddToPosition(pos.ConditionId, candidate.TokensToBuy, candidate.TopupCost);
+        pos.BookDepthComplete = true;
+        pos.LiquidationLimitPrice = candidate.SellLimitPrice;
 
         // Step 2: simulate SELL all tokens
         var exitSignal = new ExitSignal

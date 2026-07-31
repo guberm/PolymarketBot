@@ -3,6 +3,7 @@
 import json
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -10,6 +11,7 @@ import requests
 
 from config import BotConfig
 from models import MarketInfo
+from execution import BookLevel, ExecutionQuote, calculate_buy_quote, calculate_buy_shares_quote, calculate_sell_quote
 
 log = logging.getLogger("bot.scanner")
 
@@ -267,6 +269,14 @@ class MarketScanner:
             log.debug(f"Resolution check failed for {condition_id[:20]}...: {e}")
             return None
 
+    def check_market_resolutions(self, condition_ids: list[str]) -> dict[str, Optional[dict]]:
+        if not condition_ids:
+            return {}
+        with ThreadPoolExecutor(
+            max_workers=min(4, len(condition_ids)), thread_name_prefix="resolution"
+        ) as pool:
+            return dict(zip(condition_ids, pool.map(self.check_market_resolution, condition_ids)))
+
     def get_market_prices(self, token_ids: list[str]) -> dict[str, float]:
         """Fetch current prices for multiple tokens. Returns dict of token_id -> midpoint price."""
         prices = {}
@@ -288,3 +298,100 @@ class MarketScanner:
         except Exception as e:
             log.debug(f"Failed to get price for {token_id[:20]}...: {e}")
             return None
+
+    def get_buy_quote(self, token_id: str, amount_usd: float) -> Optional[ExecutionQuote]:
+        book = self._get_order_book(token_id)
+        if book is None:
+            return None
+        _, asks, timestamp_ms, age_seconds = book
+        quote = calculate_buy_quote(asks, amount_usd)
+        return ExecutionQuote(**{
+            **quote.__dict__,
+            "timestamp_ms": timestamp_ms,
+            "age_seconds": age_seconds,
+        })
+
+    def get_sell_quote(self, token_id: str, shares: float) -> Optional[ExecutionQuote]:
+        book = self._get_order_book(token_id)
+        if book is None:
+            return None
+        bids, _, timestamp_ms, age_seconds = book
+        quote = calculate_sell_quote(bids, shares)
+        return ExecutionQuote(**{
+            **quote.__dict__,
+            "timestamp_ms": timestamp_ms,
+            "age_seconds": age_seconds,
+        })
+
+    def get_sell_quotes(self, positions: list) -> dict[str, ExecutionQuote]:
+        if not positions:
+            return {}
+
+        def fetch(position):
+            return position.token_id, self.get_sell_quote(position.token_id, position.shares)
+
+        with ThreadPoolExecutor(
+            max_workers=min(4, len(positions)), thread_name_prefix="position-quote"
+        ) as pool:
+            return {
+                token_id: quote
+                for token_id, quote in pool.map(fetch, positions)
+                if quote is not None
+            }
+
+    def get_topup_quotes(self, token_id: str, buy_shares: float, sell_shares: float):
+        """Quote both legs from one fresh snapshot so a rescue cannot hide thin depth."""
+        book = self._get_order_book(token_id)
+        if book is None:
+            return None
+        bids, asks, timestamp_ms, age_seconds = book
+        buy = calculate_buy_shares_quote(asks, buy_shares)
+        sell = calculate_sell_quote(bids, sell_shares)
+        return (
+            ExecutionQuote(**{**buy.__dict__, "timestamp_ms": timestamp_ms, "age_seconds": age_seconds}),
+            ExecutionQuote(**{**sell.__dict__, "timestamp_ms": timestamp_ms, "age_seconds": age_seconds}),
+        )
+
+    def _get_order_book(
+        self, token_id: str
+    ) -> Optional[tuple[list[BookLevel], list[BookLevel], int, float]]:
+        try:
+            resp = self.session.get(
+                f"{self.config.clob_host}/book",
+                params={"token_id": token_id},
+                timeout=10,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            bids = self._parse_book_levels(data.get("bids", []))
+            asks = self._parse_book_levels(data.get("asks", []))
+            timestamp_ms = self._parse_timestamp_ms(data.get("timestamp", 0))
+            age_seconds = max(0.0, time.time() - timestamp_ms / 1000.0) if timestamp_ms else 0.0
+            if timestamp_ms and age_seconds > self.config.max_quote_age_seconds:
+                log.warning(
+                    f"Stale CLOB book for {token_id[:20]}... age={age_seconds:.1f}s "
+                    f"> {self.config.max_quote_age_seconds:.1f}s"
+                )
+                return None
+            return bids, asks, timestamp_ms, age_seconds
+        except Exception as e:
+            log.debug(f"Failed to get order book for {token_id[:20]}...: {e}")
+            return None
+
+    @staticmethod
+    def _parse_book_levels(raw_levels: list[dict]) -> list[BookLevel]:
+        levels = []
+        for raw in raw_levels:
+            try:
+                levels.append(BookLevel(float(raw.get("price", 0)), float(raw.get("size", 0))))
+            except (TypeError, ValueError, AttributeError):
+                continue
+        return levels
+
+    @staticmethod
+    def _parse_timestamp_ms(raw: object) -> int:
+        try:
+            value = int(float(raw))
+            return value * 1000 if 0 < value < 10_000_000_000 else value
+        except (TypeError, ValueError):
+            return 0

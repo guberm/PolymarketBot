@@ -6,14 +6,10 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from config import BotConfig
+from execution import ExecutionQuote
 from models import MarketInfo, Estimate, Signal, Side, Position, PortfolioSnapshot, ExitSignal, TopupCandidate
 
 log = logging.getLogger("bot.portfolio")
-
-# Approximate Claude API pricing (per million tokens)
-INPUT_COST_PER_MTOK = 3.0
-OUTPUT_COST_PER_MTOK = 15.0
-
 
 class Portfolio:
     def __init__(self, config: BotConfig, snapshot: Optional[PortfolioSnapshot] = None):
@@ -30,6 +26,7 @@ class Portfolio:
             self.total_api_cost = snapshot.total_api_cost
             self.daily_api_cost = snapshot.daily_api_cost
             self.daily_tracking_date = snapshot.daily_tracking_date or datetime.now(timezone.utc).date().isoformat()
+            self._applied_order_ids = list(snapshot.applied_order_ids)
         else:
             self.bankroll = config.initial_bankroll
             self.initial_bankroll = config.initial_bankroll
@@ -42,6 +39,7 @@ class Portfolio:
             self.total_api_cost = 0.0
             self.daily_api_cost = 0.0
             self.daily_tracking_date = datetime.now(timezone.utc).date().isoformat()
+            self._applied_order_ids = []
 
         self._recently_closed: dict[str, float] = {}  # condition_id -> unix timestamp of close
 
@@ -58,13 +56,39 @@ class Portfolio:
             total_api_cost=self.total_api_cost,
             daily_api_cost=self.daily_api_cost,
             daily_tracking_date=self.daily_tracking_date,
+            applied_order_ids=list(self._applied_order_ids),
         )
+
+    def has_applied_order(self, order_id: str) -> bool:
+        return order_id in self._applied_order_ids
+
+    def mark_order_applied(self, order_id: str) -> None:
+        if not order_id or order_id in self._applied_order_ids:
+            return
+        self._applied_order_ids.append(order_id)
+        self._applied_order_ids = self._applied_order_ids[-500:]
 
     def total_exposure(self) -> float:
         return sum(p.size_usd for p in self.positions)
 
+    def liquidation_value(self) -> float:
+        """Conservative mark-to-market value using each position's executable bid price."""
+        return sum(max(0.0, p.shares * p.current_price) for p in self.positions)
+
+    def equity(self) -> float:
+        return self.bankroll + self.liquidation_value()
+
     def category_exposure(self, category: str) -> float:
         return sum(p.size_usd for p in self.positions if p.category == category)
+
+    def event_exposure(self, event_title: str) -> float:
+        normalized = event_title.strip().casefold()
+        if not normalized:
+            return 0.0
+        return sum(
+            p.size_usd for p in self.positions
+            if p.event_title.strip().casefold() == normalized
+        )
 
     def has_position(self, condition_id: str) -> bool:
         return any(p.condition_id == condition_id for p in self.positions)
@@ -82,15 +106,53 @@ class Portfolio:
 
         if yes_edge > no_edge and yes_edge > self.config.min_edge:
             side = Side.YES
-            edge = yes_edge
             market_price = market.outcome_yes_price
             execution_price = yes_execution_price
         elif no_edge > self.config.min_edge:
             side = Side.NO
-            edge = no_edge
             market_price = market.outcome_no_price
             execution_price = no_execution_price
         else:
+            return None
+
+        return self._build_signal(
+            market, estimate, side, market_price, execution_price, execution_price, 0.0, None
+        )
+
+    def reprice_signal(
+        self,
+        signal: Signal,
+        execution_price: float,
+        limit_price: float,
+        quote_age_seconds: float = 0.0,
+    ) -> Optional[Signal]:
+        """Rebuild a candidate using a fresh executable order-book quote."""
+        return self._build_signal(
+            signal.market,
+            signal.estimate,
+            signal.side,
+            signal.market_price,
+            execution_price,
+            limit_price,
+            quote_age_seconds,
+            signal.position_size_usd,
+        )
+
+    def _build_signal(
+        self,
+        market: MarketInfo,
+        estimate: Estimate,
+        side: Side,
+        market_price: float,
+        execution_price: float,
+        limit_price: float,
+        quote_age_seconds: float,
+        size_cap_usd: Optional[float],
+    ) -> Optional[Signal]:
+        fair = estimate.fair_probability
+        fair_for_side = fair if side == Side.YES else 1.0 - fair
+        edge = fair_for_side - execution_price
+        if edge <= self.config.min_edge:
             return None
 
         if execution_price <= 0 or execution_price >= 1:
@@ -110,10 +172,12 @@ class Portfolio:
             kelly_fraction = min(kelly_fraction, 0.50)
             max_position_pct = min(max_position_pct, 0.15)
         kelly = kelly_raw * kelly_fraction
-        portfolio_val = self.bankroll + self.total_exposure()
+        portfolio_val = self.equity()
         size_usd = kelly * portfolio_val
         size_usd = min(size_usd, portfolio_val * max_position_pct)
         size_usd = min(size_usd, self.bankroll)  # never exceed available cash
+        if size_cap_usd is not None:
+            size_usd = min(size_usd, size_cap_usd)  # quote already covers this conservative cap
 
         if size_usd < self.config.min_trade_usd:
             return None
@@ -143,6 +207,8 @@ class Portfolio:
             kelly_fraction=kelly,
             position_size_usd=round(size_usd, 2),
             expected_value=round(size_usd * edge, 4),
+            limit_price=limit_price,
+            quote_age_seconds=quote_age_seconds,
         )
 
     def _estimate_buy_execution_price(self, market_price: float) -> float:
@@ -152,8 +218,8 @@ class Portfolio:
 
     def check_portfolio_risk(self) -> bool:
         """Return True if portfolio-wide risk limits allow new market scans/trades."""
-        # Daily stop loss (include open position value — deployed capital isn't lost)
-        portfolio_value = self.bankroll + self.total_exposure()
+        # Daily stop loss uses executable liquidation value, not cost basis.
+        portfolio_value = self.equity()
         daily_pnl = portfolio_value - self.daily_start_value
         daily_stop_loss_pct = self.config.daily_stop_loss_pct
         if self.config.live_trading and not self.config.allow_unsafe_risk:
@@ -209,7 +275,7 @@ class Portfolio:
             log.info(f"Risk BLOCK: max positions ({self.config.max_concurrent_positions}) reached")
             return False
 
-        pv = self.bankroll + self.total_exposure()
+        pv = self.equity()
         new_exposure = self.total_exposure() + signal.position_size_usd
         max_total_exposure_pct = self.config.max_total_exposure_pct
         if self.config.live_trading and not self.config.allow_unsafe_risk:
@@ -223,6 +289,15 @@ class Portfolio:
         cat_limit = pv * self.config.max_category_exposure_pct
         if cat_exp > cat_limit:
             log.info(f"Risk BLOCK: '{signal.market.category}' exposure ${cat_exp:.2f} > limit ${cat_limit:.2f}")
+            return False
+
+        event_exp = self.event_exposure(signal.market.event_title) + signal.position_size_usd
+        event_limit = pv * self.config.max_event_exposure_pct
+        if signal.market.event_title.strip() and event_exp > event_limit:
+            log.info(
+                f"Risk BLOCK: event exposure ${event_exp:.2f} > limit ${event_limit:.2f} "
+                f"for '{signal.market.event_title[:40]}'"
+            )
             return False
 
         return self.check_portfolio_risk()
@@ -250,9 +325,31 @@ class Portfolio:
         self.total_realized_pnl += pnl
         self.positions = [p for p in self.positions if p.condition_id != condition_id]
         self._recently_closed[condition_id] = time.time()
-        self.high_water_mark = max(self.high_water_mark, self.bankroll)
+        self.high_water_mark = max(self.high_water_mark, self.equity())
 
         log.info(f"Closed {pos.question[:40]}... PnL: ${pnl:+.2f}")
+        return pnl
+
+    def reduce_position(self, condition_id: str, sold_shares: float, exit_price: float) -> float:
+        """Apply a full or partial SELL fill and return its realized PnL."""
+        pos = next((p for p in self.positions if p.condition_id == condition_id), None)
+        if pos is None or sold_shares <= 0:
+            return 0.0
+        sold = min(sold_shares, pos.shares)
+        cost_basis = sold * pos.entry_price
+        proceeds = sold * exit_price
+        pnl = proceeds - cost_basis
+        self.bankroll += proceeds
+        self.total_realized_pnl += pnl
+        self.total_trades += 1
+        pos.shares -= sold
+        pos.size_usd = max(0.0, pos.size_usd - cost_basis)
+        if pos.shares < 0.1:
+            self.positions = [p for p in self.positions if p.condition_id != condition_id]
+            self._recently_closed[condition_id] = time.time()
+        else:
+            pos.unrealized_pnl = pos.shares * (pos.current_price - pos.entry_price)
+        self.high_water_mark = max(self.high_water_mark, self.equity())
         return pnl
 
     def resolve_position(self, condition_id: str, won: bool) -> float:
@@ -269,7 +366,7 @@ class Portfolio:
         self.total_trades += 1
         self.positions = [p for p in self.positions if p.condition_id != condition_id]
         self._recently_closed[condition_id] = time.time()
-        self.high_water_mark = max(self.high_water_mark, self.bankroll)
+        self.high_water_mark = max(self.high_water_mark, self.equity())
 
         result = "WON" if won else "LOST"
         log.info(f"Resolved ({result}): {pos.question[:40]}... payout=${payout:.2f}, PnL=${pnl:+.2f}")
@@ -283,6 +380,39 @@ class Portfolio:
             if pos.token_id in prices:
                 pos.current_price = prices[pos.token_id]
                 pos.unrealized_pnl = pos.shares * (pos.current_price - pos.entry_price)
+
+    def update_position_quotes(self, quotes: dict[str, ExecutionQuote]) -> None:
+        """Mark positions at full-size bid liquidation value; unavailable depth is valued at zero."""
+        for pos in self.positions:
+            quote = quotes.get(pos.token_id)
+            if quote is None or pos.shares <= 0:
+                pos.quote_failures += 1
+                if pos.last_fresh_price <= 0:
+                    pos.last_fresh_price = pos.current_price
+                fallback = pos.last_fresh_price
+                if fallback > 0 and pos.quote_failures < max(1, self.config.quote_failure_grace_cycles):
+                    pos.current_price = fallback * (1.0 - self.config.stale_quote_haircut_pct)
+                    pos.unrealized_pnl = pos.shares * (pos.current_price - pos.entry_price)
+                    log.warning(
+                        f"Quote unavailable for {pos.question[:40]}...; using "
+                        f"{self.config.stale_quote_haircut_pct:.0%} haircut "
+                        f"({pos.quote_failures}/{self.config.quote_failure_grace_cycles - 1} grace cycles)"
+                    )
+                else:
+                    pos.current_price = 0.0
+                    pos.unrealized_pnl = -pos.size_usd
+                    log.error(f"Quote grace exhausted for {pos.question[:40]}...; liquidation value set to zero")
+                pos.liquidation_limit_price = 0.0
+                pos.book_depth_complete = False
+                pos.quote_age_seconds = 0.0
+                continue
+            pos.current_price = quote.filled_value / pos.shares
+            pos.unrealized_pnl = pos.shares * (pos.current_price - pos.entry_price)
+            pos.liquidation_limit_price = quote.worst_price if quote.complete else 0.0
+            pos.book_depth_complete = quote.complete
+            pos.quote_age_seconds = quote.age_seconds
+            pos.last_fresh_price = pos.current_price
+            pos.quote_failures = 0
 
     def generate_exit_signals(self) -> list[ExitSignal]:
         """Tier 1: free rule-based exit checks on all positions."""
@@ -413,16 +543,17 @@ class Portfolio:
                 f"Balance sync (downward): ${prev:.2f} -> ${self.bankroll:.2f} "
                 f"(${diff:.2f}, {len(self.positions)} positions open)"
             )
-        self.high_water_mark = max(self.high_water_mark, self.bankroll + self.total_exposure())
+        self.high_water_mark = max(self.high_water_mark, self.equity())
 
     # ── Cost tracking ─────────────────────────────────────────────────
 
     def record_api_cost(self, input_tokens: int, output_tokens: int) -> None:
-        """Track inference cost without changing trading bankroll."""
-        cost = (input_tokens * INPUT_COST_PER_MTOK / 1_000_000) + \
-               (output_tokens * OUTPUT_COST_PER_MTOK / 1_000_000)
-        self.total_api_cost += cost
-        self.daily_api_cost += cost
+        """Backward-compatible Anthropic-cost accounting."""
+        self.record_api_cost_usd((input_tokens * 3.0 + output_tokens * 15.0) / 1_000_000)
+
+    def record_api_cost_usd(self, cost: float) -> None:
+        self.total_api_cost += max(0.0, cost)
+        self.daily_api_cost += max(0.0, cost)
 
     def remove_ghost_position(self, condition_id: str) -> None:
         """Remove a phantom position that has no actual on-chain tokens.
@@ -443,6 +574,6 @@ class Portfolio:
 
     def reset_daily(self, tracking_date: Optional[str] = None) -> None:
         """Reset daily tracking. Call at the start of each new trading day."""
-        self.daily_start_value = self.bankroll + self.total_exposure()
+        self.daily_start_value = self.equity()
         self.daily_api_cost = 0.0
         self.daily_tracking_date = tracking_date or datetime.now(timezone.utc).date().isoformat()

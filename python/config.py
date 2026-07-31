@@ -68,6 +68,13 @@ class BotConfig:
     markets_per_cycle: int = 15
     max_spread: float = 0.04
 
+    # Optional read-only Kalshi comparison
+    kalshi_shadow_enabled: bool = False
+    kalshi_api_host: str = "https://api.elections.kalshi.com/trade-api/v2"
+    kalshi_markets_limit: int = 200
+    kalshi_min_match_score: float = 0.55
+    kalshi_llm_same_threshold: float = 0.90
+
     # AI provider
     ai_provider: str = "anthropic"   # selected provider for single-provider mode
     multi_provider: bool = False     # True = query ALL configured providers and aggregate
@@ -111,12 +118,22 @@ class BotConfig:
     max_estimate_std: float = 0.10
     max_cycle_api_cost_usd: float = 1.00
     max_daily_api_cost_usd: float = 10.00
+    api_pricing: str = "anthropic=3/15,openai=5/15,gemini=0.10/0.40,openrouter=3/15,azure_openai=5/15"
+    calibration_weighting_enabled: bool = False
+    calibration_min_samples: int = 40
+    calibration_shrinkage: float = 0.50
+    calibration_max_provider_weight: float = 0.60
 
     # Sizing
     kelly_fraction: float = 0.15
     min_edge: float = 0.12
     min_trade_usd: float = 0.5
     entry_price_buffer: float = 0.02
+    max_quote_age_seconds: float = 15.0
+    quote_failure_grace_cycles: int = 3
+    stale_quote_haircut_pct: float = 0.25
+    resolution_checks_per_cycle: int = 20
+    resolution_retry_hours: float = 6.0
     max_live_order_bankroll_pct: float = 0.25
     allow_unsafe_risk: bool = False
 
@@ -124,6 +141,7 @@ class BotConfig:
     max_position_pct: float = 0.15
     max_total_exposure_pct: float = 1.00
     max_category_exposure_pct: float = 0.80
+    max_event_exposure_pct: float = 0.30
     daily_stop_loss_pct: float = 0.20
     max_drawdown_pct: float = 0.50
     max_concurrent_positions: int = 8
@@ -200,6 +218,11 @@ class BotConfig:
             min_market_price=get("min_market_price", 0.10),
             markets_per_cycle=get("markets_per_cycle", 15),
             max_spread=get("max_spread", 0.04),
+            kalshi_shadow_enabled=get("kalshi_shadow_enabled", False),
+            kalshi_api_host=get("kalshi_api_host", "https://api.elections.kalshi.com/trade-api/v2"),
+            kalshi_markets_limit=get("kalshi_markets_limit", 200),
+            kalshi_min_match_score=get("kalshi_min_match_score", 0.55),
+            kalshi_llm_same_threshold=get("kalshi_llm_same_threshold", 0.90),
             ai_provider=get("ai_provider", "anthropic"),
             multi_provider=get("multi_provider", False),
             anthropic_enabled=get("anthropic_enabled", True),
@@ -229,15 +252,26 @@ class BotConfig:
             max_estimate_std=get("max_estimate_std", 0.10),
             max_cycle_api_cost_usd=get("max_cycle_api_cost_usd", 1.00),
             max_daily_api_cost_usd=get("max_daily_api_cost_usd", 10.00),
+            api_pricing=get("api_pricing", "anthropic=3/15,openai=5/15,gemini=0.10/0.40,openrouter=3/15,azure_openai=5/15"),
+            calibration_weighting_enabled=get("calibration_weighting_enabled", False),
+            calibration_min_samples=get("calibration_min_samples", 40),
+            calibration_shrinkage=get("calibration_shrinkage", 0.50),
+            calibration_max_provider_weight=get("calibration_max_provider_weight", 0.60),
             kelly_fraction=get("kelly_fraction", 0.15),
             min_edge=get("min_edge", 0.12),
             min_trade_usd=get("min_trade_usd", 0.5),
             entry_price_buffer=get("entry_price_buffer", 0.02),
+            max_quote_age_seconds=get("max_quote_age_seconds", 15.0),
+            quote_failure_grace_cycles=get("quote_failure_grace_cycles", 3),
+            stale_quote_haircut_pct=get("stale_quote_haircut_pct", 0.25),
+            resolution_checks_per_cycle=get("resolution_checks_per_cycle", 20),
+            resolution_retry_hours=get("resolution_retry_hours", 6.0),
             max_live_order_bankroll_pct=get("max_live_order_bankroll_pct", 0.25),
             allow_unsafe_risk=get("allow_unsafe_risk", False),
             max_position_pct=get("max_position_pct", 0.15),
             max_total_exposure_pct=get("max_total_exposure_pct", 1.00),
             max_category_exposure_pct=get("max_category_exposure_pct", 0.80),
+            max_event_exposure_pct=get("max_event_exposure_pct", 0.30),
             daily_stop_loss_pct=get("daily_stop_loss_pct", 0.20),
             max_drawdown_pct=get("max_drawdown_pct", 0.50),
             max_concurrent_positions=get("max_concurrent_positions", 8),

@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
@@ -23,24 +24,70 @@ public sealed class Estimator
     private readonly BotConfig _config;
     private readonly HttpClient _http;
     private readonly ILogger<Estimator> _log;
+    private Dictionary<string, ProviderCalibrationStats> _calibrationStats = [];
 
     // Providers that hit 429 this cycle — skip them until ResetCycle()
-    private readonly HashSet<string> _rateLimitedThisCycle = new();
+    private readonly ConcurrentDictionary<string, byte> _rateLimitedThisCycle = new();
+    public double LastApiCostUsd { get; private set; }
 
-    public void ResetCycle() => _rateLimitedThisCycle.Clear();
+    public void ResetCycle()
+    {
+        _rateLimitedThisCycle.Clear();
+        RefreshCalibration();
+    }
 
     public Estimator(BotConfig config, HttpClient http, ILogger<Estimator> log)
     {
         _config = config;
         _http = http;
         _log = log;
+        RefreshCalibration();
+    }
+
+    private void RefreshCalibration()
+    {
+        _calibrationStats = _config.CalibrationWeightingEnabled
+            ? CalibrationWeights.Load(Path.Combine(_config.DataDir, "estimates.jsonl"))
+            : [];
     }
 
     public async Task<Estimate?> EstimateAsync(MarketInfo market, CancellationToken ct = default)
     {
-        return _config.MultiProvider
+        var started = System.Diagnostics.Stopwatch.StartNew();
+        LastApiCostUsd = 0;
+        var estimate = _config.MultiProvider
             ? await EstimateMultiAsync(market, ct)
             : await EstimateSingleAsync(market, ct);
+        if (estimate is not null) estimate.DurationSeconds = started.Elapsed.TotalSeconds;
+        return estimate;
+    }
+
+    public async Task<VerificationResult?> VerifyMarketEquivalenceAsync(
+        MarketInfo market, KalshiMarket kalshi, CancellationToken ct = default)
+    {
+        var provider = GetConfiguredProviders().FirstOrDefault() ?? _config.AiProvider;
+        var comparison = new MarketInfo
+        {
+            ConditionId = $"kalshi:{kalshi.Ticker}",
+            Question = "Will these two prediction markets always resolve to the same outcome? " +
+                $"Polymarket: {market.Question} (ends {market.EndDate}). " +
+                $"Kalshi: {kalshi.Title} (closes {kalshi.CloseTime}).",
+            Slug = "",
+            OutcomeYesPrice = 0.5,
+            OutcomeNoPrice = 0.5,
+            TokenIdYes = "",
+            TokenIdNo = "",
+            EndDate = market.EndDate,
+            Category = "market-equivalence",
+            EventTitle = "Cross-market equivalence check",
+            Description = $"Polymarket rules: {market.Description}\n" +
+                $"Kalshi rules: {kalshi.RulesPrimary} {kalshi.RulesSecondary}",
+        };
+        var result = await SingleCallAsync(comparison, provider, ct);
+        return result is null
+            ? null
+            : new VerificationResult(result.Value.Probability,
+                ApiPricing.Calculate(_config.ApiPricing, provider, result.Value.InputTokens, result.Value.OutputTokens));
     }
 
     // ── Single-provider estimation ─────────────────────────────────────────
@@ -56,13 +103,18 @@ public sealed class Estimator
         {
             var result = await SingleCallAsync(market, _config.AiProvider, ct);
             if (result is null) continue;
-            rawEstimates.Add(result.Value.Probability);
-            if (string.IsNullOrEmpty(firstReasoning)) firstReasoning = result.Value.Reasoning;
             totalInput += result.Value.InputTokens;
             totalOutput += result.Value.OutputTokens;
+            if (result.Value.Probability is not double probability) continue;
+            rawEstimates.Add(probability);
+            if (string.IsNullOrEmpty(firstReasoning)) firstReasoning = result.Value.Reasoning;
         }
 
-        return BuildEstimate(market, rawEstimates, totalInput, totalOutput, firstReasoning);
+        LastApiCostUsd = ApiPricing.Calculate(_config.ApiPricing, _config.AiProvider, totalInput, totalOutput);
+        return BuildEstimate(market, rawEstimates, totalInput, totalOutput, firstReasoning,
+            apiCostUsd: LastApiCostUsd,
+            providerEstimates: rawEstimates.Count > 0
+                ? new Dictionary<string, double> { [_config.AiProvider] = rawEstimates.Average() } : []);
     }
 
     // ── Multi-provider estimation ──────────────────────────────────────────
@@ -82,35 +134,21 @@ public sealed class Estimator
         var providerResults = new List<(string Provider, List<double> Probs, int Input, int Output, string Reasoning)>();
         var totalInput = 0;
         var totalOutput = 0;
+        var totalCost = 0.0;
         var firstReasoning = "";
 
-        foreach (var provider in configured)
+        var runs = await Task.WhenAll(configured.Select(provider => EstimateProviderAsync(market, provider, callsPer, ct)));
+        foreach (var run in runs)
         {
-            if (_rateLimitedThisCycle.Contains(provider))
-            {
-                _log.LogDebug("{Provider} skipped — rate-limited this cycle", provider);
-                continue;
-            }
-
-            var probs = new List<double>();
-            var pInput = 0; var pOutput = 0; var pReasoning = "";
-
-            for (var i = 0; i < callsPer; i++)
-            {
-                var result = await SingleCallAsync(market, provider, ct);
-                if (result is null) continue;
-                probs.Add(result.Value.Probability);
-                pInput += result.Value.InputTokens;
-                pOutput += result.Value.OutputTokens;
-                if (string.IsNullOrEmpty(pReasoning)) pReasoning = result.Value.Reasoning;
-            }
-
+            var (provider, probs, pInput, pOutput, pReasoning) = run;
+            totalInput += pInput; totalOutput += pOutput;
+            totalCost += ApiPricing.Calculate(_config.ApiPricing, provider, pInput, pOutput);
             if (probs.Count == 0) { _log.LogWarning("  {Provider}: no valid estimates — skipped", provider); continue; }
             providerResults.Add((provider, probs, pInput, pOutput, pReasoning));
-            totalInput += pInput; totalOutput += pOutput;
             if (string.IsNullOrEmpty(firstReasoning)) firstReasoning = pReasoning;
         }
 
+        LastApiCostUsd = totalCost;
         if (providerResults.Count == 0) return null;
 
         // Score provider reliability. Low variance is good, but strong market deviation is not
@@ -139,8 +177,44 @@ public sealed class Estimator
 
         // Final estimate: trimmed mean of per-provider means (each provider counts equally)
         var providerMeans = scored.Select(s => s.Mean).ToList();
+        var weights = CalibrationWeights.Calculate(_calibrationStats,
+            scored.Select(item => item.Provider).ToList(), _config.CalibrationMinSamples,
+            _config.CalibrationShrinkage, _config.CalibrationMaxProviderWeight);
+        double? weightedProbability = weights.Count == 0 ? null
+            : scored.Sum(item => item.Mean * weights[item.Provider]);
+        if (weights.Count > 0)
+            _log.LogInformation("Calibration weights: {Weights}",
+                string.Join(", ", weights.Select(item => $"{item.Key}={item.Value:P0}")));
         return BuildEstimate(market, providerMeans, totalInput, totalOutput, firstReasoning,
-            note: $"multi({scored.Count} providers, ⭐{winner})");
+            note: $"multi({scored.Count} providers, ⭐{winner})", apiCostUsd: totalCost,
+            providerEstimates: scored.ToDictionary(item => item.Provider, item => item.Mean),
+            fairProbabilityOverride: weightedProbability);
+    }
+
+    private async Task<(string Provider, List<double> Probs, int Input, int Output, string Reasoning)>
+        EstimateProviderAsync(MarketInfo market, string provider, int calls, CancellationToken ct)
+    {
+        if (_rateLimitedThisCycle.ContainsKey(provider))
+        {
+            _log.LogDebug("{Provider} skipped — rate-limited this cycle", provider);
+            return (provider, [], 0, 0, "");
+        }
+
+        var probs = new List<double>();
+        var input = 0;
+        var output = 0;
+        var reasoning = "";
+        for (var i = 0; i < calls; i++)
+        {
+            var result = await SingleCallAsync(market, provider, ct);
+            if (result is null) continue;
+            input += result.Value.InputTokens;
+            output += result.Value.OutputTokens;
+            if (result.Value.Probability is not double probability) continue;
+            probs.Add(probability);
+            if (string.IsNullOrEmpty(reasoning)) reasoning = result.Value.Reasoning;
+        }
+        return (provider, probs, input, output, reasoning);
     }
 
     private List<string> GetConfiguredProviders()
@@ -168,7 +242,8 @@ public sealed class Estimator
     };
 
     private Estimate? BuildEstimate(MarketInfo market, List<double> rawEstimates,
-        int totalInput, int totalOutput, string firstReasoning, string note = "")
+        int totalInput, int totalOutput, string firstReasoning, string note = "", double apiCostUsd = 0,
+        Dictionary<string, double>? providerEstimates = null, double? fairProbabilityOverride = null)
     {
         if (rawEstimates.Count == 0) return null;
         if (rawEstimates.Count < 2)
@@ -178,7 +253,7 @@ public sealed class Estimator
             ? rawEstimates.OrderBy(x => x).Skip(1).Take(rawEstimates.Count - 2).ToList()
             : rawEstimates;
 
-        var fairProb = trimmed.Average();
+        var fairProb = fairProbabilityOverride ?? trimmed.Average();
         var confidence = rawEstimates.Count > 1 ? StdDev(rawEstimates) : 1.0;
 
         if (rawEstimates.Count >= 2 && confidence > _config.MaxEstimateStd)
@@ -202,33 +277,32 @@ public sealed class Estimator
             ReasoningSummary = firstReasoning,
             InputTokensUsed = totalInput,
             OutputTokensUsed = totalOutput,
+            ApiCostUsd = apiCostUsd,
+            ProviderEstimates = providerEstimates ?? [],
         };
     }
 
     private async Task<CallResult?> SingleCallAsync(MarketInfo market, string provider, CancellationToken ct)
     {
-        // Retry delays for transient overload (429 / 529): 10s, 20s, 40s
-        int[] backoffMs = { 10_000, 20_000, 40_000 };
-
-        for (var attempt = 0; attempt <= backoffMs.Length; attempt++)
+        for (var attempt = 0; attempt <= 3; attempt++)
         {
             try
             {
-                var (status, body) = await MakeProviderRequestAsync(market, provider, ct);
+                var (status, body, retryAfter) = await MakeProviderRequestAsync(market, provider, ct);
 
                 if (status == 429 || status == 529)
                 {
-                    if (attempt < backoffMs.Length)
+                    if (attempt < 3)
                     {
-                        var delay = backoffMs[attempt];
+                        var delay = RetryPolicy.DelayMilliseconds(retryAfter, attempt);
                         _log.LogWarning("{Provider} {Status} (attempt {A}/{Max}) — retrying in {Sec}s",
-                            provider, status, attempt + 1, backoffMs.Length, delay / 1000);
+                            provider, status, attempt + 1, 3, delay / 1000.0);
                         await Task.Delay(delay, ct);
                         continue;
                     }
                     _log.LogError("{Provider} {Status}: giving up after {Max} retries for {Question} — skipping for rest of cycle",
-                        provider, status, backoffMs.Length, Truncate(market.Question, 40));
-                    _rateLimitedThisCycle.Add(provider);
+                        provider, status, 3, Truncate(market.Question, 40));
+                    _rateLimitedThisCycle.TryAdd(provider, 0);
                     return null;
                 }
 
@@ -259,7 +333,8 @@ public sealed class Estimator
     // ActiveModel is the model for the currently configured single provider (used as fallback)
     private string ActiveModel => GetModelForProvider(_config.AiProvider.ToLowerInvariant());
 
-    private async Task<(int status, string body)> MakeProviderRequestAsync(MarketInfo market, string provider, CancellationToken ct)
+    private async Task<(int status, string body, string? retryAfter)> MakeProviderRequestAsync(
+        MarketInfo market, string provider, CancellationToken ct)
     {
         var userPrompt = BuildUserPrompt(market);
         return provider.ToLowerInvariant() switch
@@ -274,7 +349,7 @@ public sealed class Estimator
 
     // ── Anthropic ──────────────────────────────────────────────────────────
 
-    private async Task<(int, string)> MakeAnthropicRequestAsync(string userPrompt, CancellationToken ct)
+    private async Task<(int, string, string?)> MakeAnthropicRequestAsync(string userPrompt, CancellationToken ct)
     {
         var body = JsonSerializer.Serialize(new
         {
@@ -291,8 +366,8 @@ public sealed class Estimator
         };
         req.Headers.Add("x-api-key", _config.AnthropicApiKey);
         req.Headers.Add("anthropic-version", "2023-06-01");
-        var resp = await _http.SendAsync(req, ct);
-        return ((int)resp.StatusCode, await resp.Content.ReadAsStringAsync(ct));
+        using var resp = await _http.SendAsync(req, ct);
+        return ((int)resp.StatusCode, await resp.Content.ReadAsStringAsync(ct), RetryAfter(resp));
     }
 
     private static CallResult? ParseAnthropicResponse(string body)
@@ -303,12 +378,13 @@ public sealed class Estimator
         var inputTokens = usage.GetProperty("input_tokens").GetInt32();
         var outputTokens = usage.GetProperty("output_tokens").GetInt32();
         var (prob, reasoning) = ParseProbabilityJson(text);
-        return prob < 0 ? null : new CallResult(prob, reasoning, inputTokens, outputTokens);
+        return new CallResult(prob < 0 ? null : prob, reasoning, inputTokens, outputTokens);
     }
 
     // ── OpenAI-compatible (OpenAI, OpenRouter, Azure OpenAI) ──────────────
 
-    private async Task<(int, string)> MakeOpenAiCompatRequestAsync(string provider, string userPrompt, CancellationToken ct)
+    private async Task<(int, string, string?)> MakeOpenAiCompatRequestAsync(
+        string provider, string userPrompt, CancellationToken ct)
     {
         string url;
         var model = GetModelForProvider(provider);
@@ -349,8 +425,8 @@ public sealed class Estimator
         });
         req.RequestUri = new Uri(url);
         req.Content = new StringContent(body, Encoding.UTF8, "application/json");
-        var resp = await _http.SendAsync(req, ct);
-        return ((int)resp.StatusCode, await resp.Content.ReadAsStringAsync(ct));
+        using var resp = await _http.SendAsync(req, ct);
+        return ((int)resp.StatusCode, await resp.Content.ReadAsStringAsync(ct), RetryAfter(resp));
     }
 
     private static CallResult? ParseOpenAiCompatResponse(string body)
@@ -365,12 +441,12 @@ public sealed class Estimator
         var inputTokens  = usage?.TryGetProperty("prompt_tokens",     out var pt) == true ? pt.GetInt32() : 0;
         var outputTokens = usage?.TryGetProperty("completion_tokens", out var ct2) == true ? ct2.GetInt32() : 0;
         var (prob, reasoning) = ParseProbabilityJson(text);
-        return prob < 0 ? null : new CallResult(prob, reasoning, inputTokens, outputTokens);
+        return new CallResult(prob < 0 ? null : prob, reasoning, inputTokens, outputTokens);
     }
 
     // ── Google Gemini ──────────────────────────────────────────────────────
 
-    private async Task<(int, string)> MakeGeminiRequestAsync(string userPrompt, CancellationToken ct)
+    private async Task<(int, string, string?)> MakeGeminiRequestAsync(string userPrompt, CancellationToken ct)
     {
         var model = GetModelForProvider("gemini");
         var gemHost = string.IsNullOrEmpty(_config.GeminiApiHost) ? "https://generativelanguage.googleapis.com" : _config.GeminiApiHost.TrimEnd('/');
@@ -389,9 +465,12 @@ public sealed class Estimator
         {
             Content = new StringContent(body, Encoding.UTF8, "application/json")
         };
-        var resp = await _http.SendAsync(req, ct);
-        return ((int)resp.StatusCode, await resp.Content.ReadAsStringAsync(ct));
+        using var resp = await _http.SendAsync(req, ct);
+        return ((int)resp.StatusCode, await resp.Content.ReadAsStringAsync(ct), RetryAfter(resp));
     }
+
+    private static string? RetryAfter(HttpResponseMessage response) =>
+        response.Headers.TryGetValues("Retry-After", out var values) ? values.FirstOrDefault() : null;
 
     private static CallResult? ParseGeminiResponse(string body)
     {
@@ -406,7 +485,7 @@ public sealed class Estimator
         var inputTokens  = meta?.TryGetProperty("promptTokenCount",     out var pt) == true ? pt.GetInt32() : 0;
         var outputTokens = meta?.TryGetProperty("candidatesTokenCount", out var ct2) == true ? ct2.GetInt32() : 0;
         var (prob, reasoning) = ParseProbabilityJson(text);
-        return prob < 0 ? null : new CallResult(prob, reasoning, inputTokens, outputTokens);
+        return new CallResult(prob < 0 ? null : prob, reasoning, inputTokens, outputTokens);
     }
 
     // ── Response parsing (shared) ──────────────────────────────────────────
@@ -586,5 +665,7 @@ public sealed class Estimator
     private static string Truncate(string s, int maxLen)
         => s.Length <= maxLen ? s : s[..maxLen] + "...";
 
-    private readonly record struct CallResult(double Probability, string Reasoning, int InputTokens, int OutputTokens);
+    private readonly record struct CallResult(double? Probability, string Reasoning, int InputTokens, int OutputTokens);
 }
+
+public readonly record struct VerificationResult(double? Probability, double ApiCostUsd);

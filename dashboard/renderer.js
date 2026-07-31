@@ -26,6 +26,10 @@ const TRANS = {
     openPositions: 'ОТКРЫТЫЕ ПОЗИЦИИ', tradeHistory: 'ИСТОРИЯ СДЕЛОК',
     cumulativePnl: 'НАКОПЛЕННАЯ П/У', exposureByCategory: 'ПОЗИЦИИ ПО КАТЕГОРИЯМ',
     riskLimits: 'ЛИМИТЫ РИСКА', exitBreakdown: 'ПРИЧИНЫ ВЫХОДА', liveLog: 'ЖУРНАЛ',
+    equityHistory: 'КАПИТАЛ, ПРОСАДКА И API', attentionTitle: 'ТРЕБУЕТ ВНИМАНИЯ',
+    providerHealth: 'AI-ПРОВАЙДЕРЫ', positionDetails: 'ДЕТАЛИ ПОЗИЦИИ',
+    liveWarningTitle: 'LIVE: реальные денежные ордера',
+    liveConfirm: 'Я понимаю, что бот будет размещать реальные ордера',
     // Log controls
     autoScroll: 'авто-прокрутка', folderBtn: '📂 папка', exportBtn: '⬇ экспорт', copyBtn: '⎘ копировать', clearBtn: '✕ очистить',
     // Config modal
@@ -44,6 +48,7 @@ const TRANS = {
     noData: 'Нет данных — ожидание portfolio.json',
     // Risk meters
     riskTotalExposure: 'Общие позиции', riskLargestPos: 'Крупнейшая позиция',
+    riskLargestCategory: 'Крупнейшая категория', riskLargestEvent: 'Крупнейшее событие',
     riskDailyLoss: 'Дневные убытки', riskMaxDD: 'Макс. просадка',
     riskFreeCash: 'Свободные средства', riskPositions: 'Открытых позиций',
     // Exit reasons
@@ -87,6 +92,10 @@ const TRANS = {
     openPositions: 'OPEN POSITIONS', tradeHistory: 'TRADE HISTORY',
     cumulativePnl: 'CUMULATIVE P&L', exposureByCategory: 'EXPOSURE BY CATEGORY',
     riskLimits: 'RISK LIMITS', exitBreakdown: 'EXIT BREAKDOWN', liveLog: 'LIVE LOG',
+    equityHistory: 'EQUITY, DRAWDOWN & API', attentionTitle: 'NEEDS ATTENTION',
+    providerHealth: 'AI PROVIDERS', positionDetails: 'POSITION DETAILS',
+    liveWarningTitle: 'LIVE: real-money orders',
+    liveConfirm: 'I understand that the bot will place real-money orders',
     autoScroll: 'auto-scroll', folderBtn: '📂 folder', exportBtn: '⬇ export', copyBtn: '⎘ copy', clearBtn: '✕ clear',
     configTitle: '⚙ Configuration', saveBtn: '💾 Save', browseBtn: 'Browse', dataDirLabel: 'Data dir: ',
     startModalTitle: '▶ Start Bot', implLabel: 'Implementation', flagsLabel: 'Flags', launchBtn: '▶ Launch',
@@ -99,6 +108,7 @@ const TRANS = {
     emptyWaiting: 'Waiting…', emptyNoTrades: 'No closed trades yet',
     noData: 'No data — waiting for portfolio.json',
     riskTotalExposure: 'Total Exposure', riskLargestPos: 'Largest Position',
+    riskLargestCategory: 'Largest Category', riskLargestEvent: 'Largest Event',
     riskDailyLoss: 'Daily P&L Loss', riskMaxDD: 'Max Drawdown',
     riskFreeCash: 'Free Cash', riskPositions: 'Positions Open',
     exitStopLoss: 'stop loss', exitTakeProfit: 'take profit', exitEdgeGone: 'edge gone',
@@ -156,21 +166,29 @@ function applyTips() {
   const tipDict = TRANS[currentLang]?.tips ?? TRANS.en.tips
   document.querySelectorAll('.tip-icon[data-tip-key]').forEach(el => {
     const text = tipDict[el.dataset.tipKey]
-    if (text) el.dataset.tip = text
+    if (text) {
+      el.dataset.tip = text
+      el.setAttribute('aria-label', `${currentLang === 'ru' ? 'Справка' : 'Help'}: ${text}`)
+    }
   })
 }
 
 // ── Floating tooltip (position:fixed — not clipped by overflow:hidden) ────
 function initTooltips() {
+  document.querySelectorAll('span.tip-icon').forEach(span => {
+    const button = document.createElement('button')
+    for (const attr of span.attributes) button.setAttribute(attr.name, attr.value)
+    button.type = 'button'
+    button.innerHTML = span.innerHTML
+    span.replaceWith(button)
+  })
   const popup = document.createElement('div')
   popup.className = 'tooltip-popup hidden'
   document.body.appendChild(popup)
 
   let hideTimer = null
 
-  document.addEventListener('mouseover', e => {
-    const icon = e.target.closest('.tip-icon[data-tip]')
-    if (!icon) return
+  function showTip(icon) {
     clearTimeout(hideTimer)
     popup.textContent = icon.dataset.tip
     popup.classList.remove('hidden')
@@ -191,25 +209,39 @@ function initTooltips() {
       popup.style.top = (above >= 4 ? above : rect.bottom + GAP) + 'px'
       popup.classList.add('visible')
     })
-  })
+  }
 
-  document.addEventListener('mouseout', e => {
-    const icon = e.target.closest('.tip-icon[data-tip]')
-    if (!icon) return
+  function hideTip() {
     popup.classList.remove('visible')
     hideTimer = setTimeout(() => popup.classList.add('hidden'), 150)
+  }
+
+  document.addEventListener('mouseover', e => {
+    const icon = e.target.closest('.tip-icon[data-tip]')
+    if (icon) showTip(icon)
   })
+  document.addEventListener('mouseout', e => { if (e.target.closest('.tip-icon[data-tip]')) hideTip() })
+  document.addEventListener('focusin', e => {
+    const icon = e.target.closest('.tip-icon[data-tip]')
+    if (icon) showTip(icon)
+  })
+  document.addEventListener('focusout', e => { if (e.target.closest('.tip-icon[data-tip]')) hideTip() })
 }
 
 // ── State ─────────────────────────────────────────────────────────────────
 let portfolio = null
 let trades = []
 let logs = []
+let estimates = []
+let pendingOrders = []
+let equityHistory = []
 let extraLogLines = []
 let logClearedAt = Date.now()   // hide everything before dashboard opened; reset on bot start
 let pnlChart = null
 let catChart = null
+let historyChart = null
 let botRunning = false
+let lastAttentionSignature = ''
 
 // Sort state for positions table
 let posSort = { col: null, dir: 'asc' }
@@ -277,17 +309,43 @@ async function init() {
 }
 
 // ── Main refresh ──────────────────────────────────────────────────────────
+let refreshInFlight = null
+let refreshQueued = false
+
 async function refresh() {
-  const [p, tr, l] = await Promise.all([api.readPortfolio(), api.readTrades(), api.readLogs(200)])
+  if (refreshInFlight) {
+    refreshQueued = true
+    return refreshInFlight
+  }
+  refreshInFlight = (async () => {
+    do {
+      refreshQueued = false
+      await refreshOnce()
+    } while (refreshQueued)
+  })()
+  try { return await refreshInFlight } finally { refreshInFlight = null }
+}
+
+async function refreshOnce() {
+  const [p, tr, l, cfg, ev, po, history] = await Promise.all([
+    api.readPortfolio(), api.readTrades(), api.readLogs(200), api.readConfig(),
+    api.readEstimates(), api.readPendingOrders(), api.readEquityHistory()
+  ])
   portfolio = p
   trades = tr || []
   logs = l || []
+  currentConfig = cfg || currentConfig
+  estimates = ev || []
+  pendingOrders = po || []
+  equityHistory = history || []
 
   renderStats()
   renderCategoryFilters()
   renderPositions()
   renderRiskMeters()
   renderExitBreakdown()
+  renderAttention()
+  renderProviderHealth()
   renderCharts()
   renderTrades()
   renderLog()
@@ -357,6 +415,56 @@ function renderStats() {
   $('halted-badge').classList.toggle('hidden', !is_halted)
 }
 
+// ── Operational health ───────────────────────────────────────────────────
+function renderAttention() {
+  const items = DashboardModel.buildAttention({ portfolio, pendingOrders, logs, config: currentConfig })
+  const container = $('attention-list')
+  const badge = $('attention-count')
+  badge.textContent = String(items.length)
+  badge.className = `badge ${items.some(x => x.severity === 'critical') ? 'badge-red' : items.length ? 'badge-amber' : 'badge-green'}`
+  if (!items.length) {
+    container.innerHTML = `<div class="health-empty positive">✓ ${currentLang === 'ru' ? 'Критичных сигналов нет' : 'All clear'}</div>`
+  } else {
+    const titles = currentLang === 'ru' ? {
+      halted: 'Торговля остановлена', pending_order: 'Ордер требует сверки',
+      quote_health: 'Проблема котировки', api_budget: 'API-бюджет почти исчерпан',
+      recent_error: 'Недавние ошибки', rate_limit: 'Ограничение частоты API',
+    } : {}
+    container.innerHTML = items.map(item => `<div class="attention-item attention-${item.severity}">
+      <span class="attention-dot" aria-hidden="true"></span>
+      <div><strong>${escHtml(titles[item.code] || item.title)}</strong><div class="muted small">${escHtml(item.detail)}</div></div>
+    </div>`).join('')
+  }
+  const signature = items.map(x => `${x.code}:${x.severity}`).join('|')
+  if (signature !== lastAttentionSignature) {
+    $('ui-status').textContent = items.length
+      ? `${items.length} ${currentLang === 'ru' ? 'сигналов требуют внимания' : 'items need attention'}`
+      : (currentLang === 'ru' ? 'Критичных сигналов нет' : 'All clear')
+    lastAttentionSignature = signature
+  }
+}
+
+function renderProviderHealth() {
+  const rows = DashboardModel.buildProviderHealth(estimates, logs, currentConfig)
+  const configured = rows.filter(row => row.configured || row.enabled)
+  const visible = configured.length ? configured : rows
+  $('provider-health').innerHTML = visible.map(row => {
+    const state = row.degraded ? (currentLang === 'ru' ? 'сбой' : 'degraded')
+      : row.configured ? (currentLang === 'ru' ? 'настроен' : 'configured')
+        : row.enabled ? (currentLang === 'ru' ? 'нет ключа' : 'no key') : (currentLang === 'ru' ? 'выкл.' : 'off')
+    const cls = row.degraded ? 'negative' : row.configured ? 'positive' : 'muted'
+    const latest = row.lastProbability == null ? '—' : `${(row.lastProbability * 100).toFixed(1)}%`
+    const minSamples = Number(currentConfig.calibration_min_samples ?? 20)
+    const samples = currentConfig.calibration_weighting_enabled ? `n=${row.sampleCount}/${minSamples}` : `n=${row.sampleCount}`
+    const calibration = row.brier == null ? samples : `${samples} · Brier ${row.brier.toFixed(3)}`
+    const weight = row.weight == null ? '' : ` · w ${(row.weight * 100).toFixed(0)}%`
+    return `<div class="provider-row">
+      <div><strong>${escHtml(PROVIDER_NAMES[row.provider] || row.provider)}</strong><div class="muted small">${calibration}${weight}</div></div>
+      <div class="provider-state"><span class="${cls}">${state}</span><span class="mono">${latest}</span></div>
+    </div>`
+  }).join('')
+}
+
 // ── Category filters ──────────────────────────────────────────────────────
 function renderCategoryFilters() {
   if (!portfolio?.positions?.length) { $('cat-filters').innerHTML = ''; return }
@@ -364,7 +472,7 @@ function renderCategoryFilters() {
   $('cat-filters').innerHTML = cats.map(cat => {
     const color = getCatColor(cat)
     const off = hiddenCategories.has(cat)
-    return `<button class="cat-pill ${off ? 'off' : ''}" data-cat="${escHtml(cat)}">
+    return `<button class="cat-pill ${off ? 'off' : ''}" data-cat="${escHtml(cat)}" aria-pressed="${!off}">
       <span class="cat-dot" style="background:${color}"></span>${escHtml(cat)}
     </button>`
   }).join('')
@@ -454,7 +562,7 @@ function renderPositions() {
       : '<span class="muted">—</span>'
 
     return `<tr>
-      <td class="market-cell" title="${escHtml(p.question)}">${escHtml(truncate(p.question, 40))}</td>
+      <td class="market-cell"><button type="button" class="market-link" data-position-id="${escHtml(p.condition_id)}" data-position-side="${escHtml(p.side)}" title="${escHtml(p.question)}">${escHtml(truncate(p.question, 40))}</button></td>
       <td><span class="pill ${p.side === 'YES' ? 'pill-yes' : 'pill-no'}">${p.side}</span></td>
       <td>${p.entry_price.toFixed(4)}</td>
       <td>${p.current_price.toFixed(4)}</td>
@@ -469,28 +577,60 @@ function renderPositions() {
       <td class="muted">${fmtAge(p.opened_at)}</td>
     </tr>`
   }).join('')
+  tbody.querySelectorAll('.market-link').forEach(button => button.addEventListener('click', () => {
+    const position = portfolio.positions.find(p => p.condition_id === button.dataset.positionId && p.side === button.dataset.positionSide)
+    if (position) showPositionDetails(position, button)
+  }))
+}
+
+function showPositionDetails(position, trigger) {
+  const currentValue = Number(position.shares || 0) * Number(position.current_price || 0)
+  const liquidation = Number(position.shares || 0) * Number(position.liquidation_limit_price || 0)
+  const edge = position.fair_estimate_at_entry > 0
+    ? (position.side === 'YES' ? position.fair_estimate_at_entry - position.current_price : 1 - position.fair_estimate_at_entry - position.current_price)
+    : null
+  const rows = [
+    ['Market', position.question], ['Event', position.event_title || '—'], ['Category', position.category || 'other'],
+    ['Side', position.side], ['Entry / current', `${Number(position.entry_price || 0).toFixed(4)} / ${Number(position.current_price || 0).toFixed(4)}`],
+    ['Fair / edge', `${position.fair_estimate_at_entry > 0 ? Number(position.fair_estimate_at_entry).toFixed(4) : '—'} / ${edge == null ? '—' : fmtPct2(edge)}`],
+    ['Shares', Number(position.shares || 0).toFixed(2)], ['Cost / market value', `${fmtUsd(Number(position.size_usd || 0))} / ${fmtUsd(currentValue)}`],
+    ['Liquidation value', position.book_depth_complete === false ? 'Unavailable' : fmtUsd(liquidation || currentValue)],
+    ['Unrealized P&L', fmt$(Number(position.unrealized_pnl || 0))],
+    ['Quote health', `${Number(position.quote_age_seconds || 0).toFixed(1)}s · ${position.quote_failures || 0} failures · ${position.book_depth_complete === false ? 'incomplete depth' : 'depth OK'}`],
+    ['Opened', position.opened_at ? fmtTime(position.opened_at) : '—'], ['Order ID', position.order_id || '—'],
+  ]
+  $('position-details').innerHTML = `<dl>${rows.map(([label, value]) => `<dt>${escHtml(label)}</dt><dd>${escHtml(value)}</dd>`).join('')}</dl>`
+  openModal('position-modal', trigger)
 }
 
 // ── Sort headers ──────────────────────────────────────────────────────────
 function initSortHeaders() {
   document.querySelectorAll('#positions-table .th-sort').forEach(th => {
-    th.addEventListener('click', () => {
-      const col = th.dataset.sort
+    const col = th.dataset.sort, key = th.dataset.i18n
+    th.removeAttribute('data-i18n')
+    th.innerHTML = `<button type="button" class="sort-button" data-i18n="${key}">${escHtml(t(key))}<span class="sort-ind" aria-hidden="true"></span></button>`
+    const button = th.querySelector('button')
+    button.addEventListener('click', () => {
       if (posSort.col === col) posSort.dir = posSort.dir === 'asc' ? 'desc' : 'asc'
       else posSort = { col, dir: 'asc' }
-      document.querySelectorAll('#positions-table .th-sort').forEach(h => h.classList.remove('sort-asc', 'sort-desc'))
+      document.querySelectorAll('#positions-table .th-sort').forEach(h => { h.classList.remove('sort-asc', 'sort-desc'); h.removeAttribute('aria-sort') })
       th.classList.add('sort-' + posSort.dir)
+      th.setAttribute('aria-sort', posSort.dir === 'asc' ? 'ascending' : 'descending')
       renderPositions()
     })
   })
 
   document.querySelectorAll('#trades-table .th-sort').forEach(th => {
-    th.addEventListener('click', () => {
-      const col = th.dataset.sort
+    const col = th.dataset.sort, key = th.dataset.i18n
+    th.removeAttribute('data-i18n')
+    th.innerHTML = `<button type="button" class="sort-button" data-i18n="${key}">${escHtml(t(key))}<span class="sort-ind" aria-hidden="true"></span></button>`
+    const button = th.querySelector('button')
+    button.addEventListener('click', () => {
       if (tradesSort.col === col) tradesSort.dir = tradesSort.dir === 'asc' ? 'desc' : 'asc'
       else tradesSort = { col, dir: 'asc' }
-      document.querySelectorAll('#trades-table .th-sort').forEach(h => h.classList.remove('sort-asc', 'sort-desc'))
+      document.querySelectorAll('#trades-table .th-sort').forEach(h => { h.classList.remove('sort-asc', 'sort-desc'); h.removeAttribute('aria-sort') })
       th.classList.add('sort-' + tradesSort.dir)
+      th.setAttribute('aria-sort', tradesSort.dir === 'asc' ? 'ascending' : 'descending')
       renderTrades()
     })
   })
@@ -502,18 +642,39 @@ function renderRiskMeters() {
   if (!portfolio) { container.innerHTML = `<div class="muted small" style="padding:10px">${t('emptyWaiting')}</div>`; return }
   const { bankroll, positions = [], high_water_mark, daily_start_value } = portfolio
   const totalExposure = positions.reduce((s, p) => s + p.shares * p.current_price, 0)
+  const deployed = positions.reduce((s, p) => s + p.size_usd, 0)
   const portVal = bankroll + totalExposure
   const maxPos = positions.length > 0 ? Math.max(...positions.map(p => p.size_usd)) : 0
+  const categoryExposure = {}, eventExposure = {}
+  for (const p of positions) {
+    const category = p.category || 'other'
+    categoryExposure[category] = (categoryExposure[category] || 0) + p.size_usd
+    const event = (p.event_title || '').trim().toLocaleLowerCase()
+    if (event) eventExposure[event] = (eventExposure[event] || 0) + p.size_usd
+  }
+  const maxCategory = Math.max(0, ...Object.values(categoryExposure))
+  const maxEvent = Math.max(0, ...Object.values(eventExposure))
   const drawdown = high_water_mark > 0 ? (high_water_mark - portVal) / high_water_mark : 0
   const dailyLoss = daily_start_value > 0 ? Math.max(0, (daily_start_value - portVal) / daily_start_value) : 0
+  const liveSafe = currentConfig.live_trading && !currentConfig.allow_unsafe_risk
+  const totalLimit = liveSafe ? Math.min(currentConfig.max_total_exposure_pct ?? 1, .90) : (currentConfig.max_total_exposure_pct ?? 1)
+  const positionLimit = liveSafe ? Math.min(currentConfig.max_position_pct ?? .15, .15) : (currentConfig.max_position_pct ?? .15)
+  const dailyLimit = liveSafe ? Math.min(currentConfig.daily_stop_loss_pct ?? .20, .25) : (currentConfig.daily_stop_loss_pct ?? .20)
+  const drawdownLimit = liveSafe ? Math.min(currentConfig.max_drawdown_pct ?? .50, .60) : (currentConfig.max_drawdown_pct ?? .50)
+  const categoryLimit = currentConfig.max_category_exposure_pct ?? .80
+  const eventLimit = currentConfig.max_event_exposure_pct ?? .30
+  const maxPositions = currentConfig.max_concurrent_positions ?? 8
+  const pctLimit = (value, limit, digits = 1) => `${(value*100).toFixed(digits)}% / ${(limit*100).toFixed(0)}%`
 
   const metrics = [
-    { label: t('riskTotalExposure'), val: portVal > 0 ? totalExposure / portVal : 0, limit: 1.00, fmt: v => `${(v*100).toFixed(0)}% / 100%` },
-    { label: t('riskLargestPos'),   val: portVal > 0 ? maxPos / portVal : 0,         limit: 0.15, fmt: v => `${(v*100).toFixed(1)}% / 15%` },
-    { label: t('riskDailyLoss'),    val: dailyLoss,                                   limit: 0.20, fmt: v => `${(v*100).toFixed(1)}% / 20%` },
-    { label: t('riskMaxDD'),        val: drawdown,                                    limit: 0.50, fmt: v => `${(v*100).toFixed(1)}% / 50%` },
+    { label: t('riskTotalExposure'), val: portVal > 0 ? deployed / portVal : 0, limit: totalLimit, fmt: v => pctLimit(v, totalLimit, 0) },
+    { label: t('riskLargestPos'), val: portVal > 0 ? maxPos / portVal : 0, limit: positionLimit, fmt: v => pctLimit(v, positionLimit) },
+    { label: t('riskLargestCategory'), val: portVal > 0 ? maxCategory / portVal : 0, limit: categoryLimit, fmt: v => pctLimit(v, categoryLimit) },
+    { label: t('riskLargestEvent'), val: portVal > 0 ? maxEvent / portVal : 0, limit: eventLimit, fmt: v => pctLimit(v, eventLimit) },
+    { label: t('riskDailyLoss'), val: dailyLoss, limit: dailyLimit, fmt: v => pctLimit(v, dailyLimit) },
+    { label: t('riskMaxDD'), val: drawdown, limit: drawdownLimit, fmt: v => pctLimit(v, drawdownLimit) },
     { label: t('riskFreeCash'),     val: portVal > 0 ? bankroll / portVal : 0,        limit: null, fmt: () => `${fmtUsd(bankroll)} / ${fmtUsd(portVal)}` },
-    { label: t('riskPositions'),    val: positions.length / 20,                       limit: null, fmt: () => `${positions.length} / 20` },
+    { label: t('riskPositions'), val: positions.length / maxPositions, limit: null, fmt: () => `${positions.length} / ${maxPositions}` },
   ]
 
   container.innerHTML = metrics.map(m => {
@@ -581,11 +742,49 @@ function initCharts() {
       cutout: '65%',
     },
   })
+
+  historyChart = new Chart($('history-chart').getContext('2d'), {
+    type: 'line',
+    data: { labels: [], datasets: [
+      { label: 'Equity ($)', data: [], borderColor: '#10b981', borderWidth: 2, pointRadius: 0, tension: .2, yAxisID: 'y' },
+      { label: 'API cost ($)', data: [], borderColor: '#8b5cf6', borderWidth: 1.5, pointRadius: 0, tension: .2, yAxisID: 'yApi' },
+      { label: 'Drawdown (%)', data: [], borderColor: '#ef4444', borderWidth: 1.5, pointRadius: 0, tension: .2, yAxisID: 'yPct' },
+    ] },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: true, labels: { color: '#7a8fa8', font: { family: 'monospace', size: 9 }, boxWidth: 10 } },
+        tooltip: { backgroundColor: '#141b2d', titleColor: '#d4dff0', bodyColor: '#7a8fa8', borderColor: '#1e2d45', borderWidth: 1 },
+      },
+      scales: {
+        x: { ticks: { color: '#4a5f7a', font: { family: 'monospace', size: 9 }, maxTicksLimit: 8 }, grid: { color: 'rgba(30,45,69,0.5)' } },
+        y: { position: 'left', ticks: { color: '#4a5f7a', callback: value => `$${Number(value).toFixed(0)}` }, grid: { color: 'rgba(30,45,69,0.5)' } },
+        yApi: { position: 'right', ticks: { color: '#8b5cf6', callback: value => `$${Number(value).toFixed(0)}` }, grid: { drawOnChartArea: false } },
+        yPct: { position: 'right', offset: true, min: 0, ticks: { color: '#ef4444', callback: value => `${Number(value).toFixed(0)}%` }, grid: { drawOnChartArea: false } },
+      },
+    },
+  })
 }
 
 function renderCharts() {
   renderPnlChart()
   renderCatChart()
+  renderHistoryChart()
+}
+
+function renderHistoryChart() {
+  if (!historyChart) return
+  const points = equityHistory.slice(-500)
+  historyChart.data.labels = points.map(point => new Date(Number(point.timestamp) * 1000).toLocaleString(currentLang === 'ru' ? 'ru-RU' : 'en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }))
+  historyChart.data.datasets[0].data = points.map(point => Number(point.equity || 0))
+  historyChart.data.datasets[1].data = points.map(point => Number(point.total_api_cost || 0))
+  historyChart.data.datasets[2].data = points.map(point => Number(point.drawdown || 0) * 100)
+  historyChart.update('none')
+  const last = points[points.length - 1]
+  $('history-summary').textContent = last
+    ? `${currentLang === 'ru' ? 'Текущие' : 'Current'}: equity ${fmtUsd(Number(last.equity || 0))}, drawdown ${(Number(last.drawdown || 0) * 100).toFixed(1)}%, API ${fmtUsd(Number(last.total_api_cost || 0))}. ${points.length} ${currentLang === 'ru' ? 'точек' : 'points'}.`
+    : (currentLang === 'ru' ? 'История появится после первого обновления portfolio.json.' : 'History starts after the first portfolio.json update.')
 }
 
 function buildPnlTimeline() {
@@ -626,12 +825,15 @@ function renderPnlChart() {
   pnlChart.data.datasets[0].backgroundColor = fillColor
   pnlChart.data.datasets[0].pointRadius = data.length < 30 ? 3 : 0
   pnlChart.update('none')
+  $('pnl-summary').textContent = points.length
+    ? `${currentLang === 'ru' ? 'Накопленная реализованная прибыль или убыток' : 'Cumulative realized profit or loss'}: ${fmt$(finalVal)}, ${points.length} ${currentLang === 'ru' ? 'закрытий' : 'closes'}.`
+    : (currentLang === 'ru' ? 'Закрытых сделок пока нет.' : 'No closed trades yet.')
 }
 
 function renderCatChart() {
   if (!portfolio?.positions?.length) {
     catChart.data.labels = []; catChart.data.datasets[0].data = []; catChart.data.datasets[0].backgroundColor = []
-    catChart.update('none'); return
+    catChart.update('none'); $('cat-summary').textContent = currentLang === 'ru' ? 'Открытых позиций нет.' : 'No open positions.'; return
   }
   const catMap = {}
   for (const p of portfolio.positions) {
@@ -643,6 +845,7 @@ function renderCatChart() {
   catChart.data.datasets[0].data = entries.map(([, v]) => parseFloat(v.toFixed(2)))
   catChart.data.datasets[0].backgroundColor = entries.map(([cat]) => getCatColor(cat))
   catChart.update('none')
+  $('cat-summary').textContent = entries.map(([cat, value]) => `${cat}: ${fmtUsd(value)}`).join('; ')
 }
 
 function baseChartOpts(prefix = '') {
@@ -814,12 +1017,22 @@ function dragResize(handle, vertical, onDelta, onDone) {
   document.addEventListener('mousemove', e => {
     if (!active) return
     const pos = vertical ? e.clientY : e.clientX
-    onDelta(pos - last); last = pos
+    onDelta(pos - last); last = pos; handle.setAttribute('aria-valuenow', String(Math.round(vertical ? $('right-upper').offsetHeight : $('left-col').offsetWidth)))
   })
   document.addEventListener('mouseup', () => {
     if (!active) return
     active = false; handle.classList.remove('rh-active')
     document.body.style.cursor = ''; document.body.style.userSelect = ''
+    if (onDone) onDone()
+  })
+  handle.setAttribute('aria-valuenow', String(Math.round(vertical ? $('right-upper').offsetHeight : $('left-col').offsetWidth)))
+  handle.addEventListener('keydown', e => {
+    const delta = vertical
+      ? (e.key === 'ArrowDown' ? 20 : e.key === 'ArrowUp' ? -20 : 0)
+      : (e.key === 'ArrowRight' ? 20 : e.key === 'ArrowLeft' ? -20 : 0)
+    if (!delta) return
+    e.preventDefault(); onDelta(delta)
+    handle.setAttribute('aria-valuenow', String(Math.round(vertical ? $('right-upper').offsetHeight : $('left-col').offsetWidth)))
     if (onDone) onDone()
   })
 }
@@ -887,6 +1100,12 @@ const CONFIG_SCHEMA = [
     { key: 'min_time_to_resolution_hours',   label: 'Min Time to Resolution (h)', ru: 'Мин. время до завершения (ч)', type: 'number', step: 1 },
     { key: 'min_market_price',               label: 'Min Market Price',           ru: 'Мин. цена рынка',            type: 'number', step: 0.01 },
     { key: 'markets_per_cycle',              label: 'Markets Per Cycle',          ru: 'Рынков за цикл',             type: 'number', step: 1 },
+    { key: 'max_spread',                     label: 'Max Spread',                 ru: 'Макс. спред',                type: 'number', step: 0.01 },
+    { key: 'max_quote_age_seconds',          label: 'Max Book Age (sec)',         ru: 'Макс. возраст стакана (сек)', type: 'number', step: 1 },
+    { key: 'quote_failure_grace_cycles',     label: 'Quote Failure Grace',        ru: 'Grace при сбое стакана',       type: 'number', step: 1 },
+    { key: 'stale_quote_haircut_pct',        label: 'Stale Quote Haircut',        ru: 'Дисконт старой цены',          type: 'number', step: 0.05 },
+    { key: 'resolution_checks_per_cycle',    label: 'Resolution Checks/Cycle',    ru: 'Проверок исходов/цикл',        type: 'number', step: 1 },
+    { key: 'resolution_retry_hours',         label: 'Resolution Retry (hours)',   ru: 'Повтор исхода (часы)',         type: 'number', step: 1 },
   ]},
   { section: 'ESTIMATION', ru: 'ОЦЕНКА', fields: [
     { key: 'ensemble_size',        label: 'Ensemble Size',   ru: 'Размер ансамбля',  type: 'number', step: 1 },
@@ -895,6 +1114,18 @@ const CONFIG_SCHEMA = [
     { key: 'max_estimate_std',     label: 'Max Std Dev',     ru: 'Макс. разброс',    type: 'number', step: 0.01 },
     { key: 'max_cycle_api_cost_usd', label: 'Cycle API Budget $', ru: 'API бюджет цикла $', type: 'number', step: 0.05 },
     { key: 'max_daily_api_cost_usd', label: 'Daily API Budget $', ru: 'API бюджет дня $',    type: 'number', step: 0.50 },
+    { key: 'api_pricing',            label: 'Provider Pricing $/MTok', ru: 'Тарифы провайдеров $/MTok', type: 'text' },
+    { key: 'calibration_weighting_enabled', label: 'Calibration Weights', ru: 'Веса по калибровке', type: 'bool' },
+    { key: 'calibration_min_samples', label: 'Calibration Min Samples', ru: 'Мин. исходов для весов', type: 'number', step: 1 },
+    { key: 'calibration_shrinkage', label: 'Calibration Shrinkage', ru: 'Сглаживание весов', type: 'number', step: 0.05 },
+    { key: 'calibration_max_provider_weight', label: 'Max Provider Weight', ru: 'Макс. вес провайдера', type: 'number', step: 0.05 },
+  ]},
+  { section: 'KALSHI SHADOW', ru: 'KALSHI СРАВНЕНИЕ', fields: [
+    { key: 'kalshi_shadow_enabled',       label: 'Enabled (read-only)', ru: 'Включено (только чтение)', type: 'bool' },
+    { key: 'kalshi_api_host',             label: 'API Host',            ru: 'API хост',                  type: 'text' },
+    { key: 'kalshi_markets_limit',        label: 'Markets Per Snapshot', ru: 'Рынков в снимке',          type: 'number', step: 10 },
+    { key: 'kalshi_min_match_score',      label: 'Min Token Match',     ru: 'Мин. текстовое совпадение', type: 'number', step: 0.05 },
+    { key: 'kalshi_llm_same_threshold',   label: 'LLM Same Threshold',  ru: 'LLM порог эквивалентности', type: 'number', step: 0.05 },
   ]},
   { section: 'SIZING & RISK', ru: 'РАЗМЕРЫ И РИСКИ', fields: [
     { key: 'kelly_fraction',            label: 'Kelly Fraction',    ru: 'Доля Келли',           type: 'number', step: 0.05 },
@@ -905,6 +1136,7 @@ const CONFIG_SCHEMA = [
     { key: 'max_position_pct',          label: 'Max Position %',   ru: 'Макс. позиция %',      type: 'number', step: 0.01 },
     { key: 'max_total_exposure_pct',    label: 'Max Exposure %',   ru: 'Макс. открытые %',     type: 'number', step: 0.05 },
     { key: 'max_category_exposure_pct', label: 'Max Category %',   ru: 'Макс. категория %',    type: 'number', step: 0.05 },
+    { key: 'max_event_exposure_pct',    label: 'Max Event %',      ru: 'Макс. событие %',       type: 'number', step: 0.05 },
     { key: 'daily_stop_loss_pct',       label: 'Daily Stop-Loss %',ru: 'Дневной стоп-лосс %',  type: 'number', step: 0.01 },
     { key: 'max_drawdown_pct',          label: 'Max Drawdown %',   ru: 'Макс. просадка %',     type: 'number', step: 0.01 },
     { key: 'max_concurrent_positions',  label: 'Max Positions',    ru: 'Макс. позиций',        type: 'number', step: 1 },
@@ -976,6 +1208,7 @@ async function openConfig() {
       const val = currentConfig[f.key]
       const group = document.createElement('div'); group.className = 'form-group'
       const flabel = currentLang === 'ru' && f.ru ? f.ru : f.label
+      const inputId = `cfg-${f.key}`
 
       // Provider-specific fields: tag with data-providers for show/hide
       if (f.providers) {
@@ -983,8 +1216,8 @@ async function openConfig() {
       }
 
       if (f.type === 'provider-select') {
-        group.innerHTML = `<label class="form-label">${flabel}</label>
-          <select class="form-input" data-key="${f.key}">${
+        group.innerHTML = `<label class="form-label" for="${inputId}">${flabel}</label>
+          <select id="${inputId}" class="form-input" data-key="${f.key}">${
             Object.entries(PROVIDER_NAMES).map(([k, v]) =>
               `<option value="${k}" ${(val || 'anthropic') === k ? 'selected' : ''}>${v}</option>`
             ).join('')
@@ -994,14 +1227,14 @@ async function openConfig() {
 
       } else if (f.type === 'model-select') {
         const currentModel = val || currentConfig.claude_model || ''
-        group.innerHTML = `<label class="form-label">${flabel}</label>
+        group.innerHTML = `<label class="form-label" for="${inputId}">${flabel}</label>
           <div style="display:flex;gap:6px;align-items:center">
-            <select class="form-input" data-key="${f.key}" style="flex:1;min-width:0">
+            <select id="${inputId}" class="form-input" data-key="${f.key}" style="flex:1;min-width:0">
               <option value="${escHtml(currentModel)}" selected>${escHtml(currentModel) || '(enter or load)'}</option>
             </select>
-            <button class="btn btn-secondary btn-sm" id="load-models-btn" style="white-space:nowrap;flex-shrink:0">↺ Load</button>
+            <button type="button" class="btn btn-secondary btn-sm load-models-btn" aria-label="Load ${escHtml(flabel)} models" style="white-space:nowrap;flex-shrink:0">↺ Load</button>
           </div>`
-        const btn = group.querySelector('#load-models-btn')
+        const btn = group.querySelector('.load-models-btn')
         const sel = group.querySelector('select')
         // loadFrom = fixed provider for this field; fallback = currently selected provider
         const fieldProvider = f.loadFrom || null
@@ -1035,7 +1268,7 @@ async function openConfig() {
         group.innerHTML = `<div class="form-toggle-row">
           <label class="form-label">${flabel}</label>
           <label class="toggle-switch">
-            <input type="checkbox" data-key="${f.key}" ${checked ? 'checked' : ''}>
+            <input id="${inputId}" type="checkbox" data-key="${f.key}" aria-label="${escHtml(flabel)}" ${checked ? 'checked' : ''}>
             <span class="toggle-slider"></span>
           </label></div>`
         if (f.danger) {
@@ -1045,15 +1278,19 @@ async function openConfig() {
           })
         }
       } else {
-        group.innerHTML = `<label class="form-label">${flabel}</label>
+        group.innerHTML = `<label class="form-label" for="${inputId}">${flabel}</label>
           <input class="form-input" type="${f.type === 'password' ? 'password' : f.type === 'number' ? 'number' : 'text'}"
-            data-key="${f.key}" value="${escHtml(String(val ?? ''))}" step="${f.step || 'any'}" autocomplete="off"
+            id="${inputId}" data-key="${f.key}" value="${escHtml(String(val ?? ''))}" step="${f.step || 'any'}" autocomplete="off"
             ${f.danger ? 'data-danger="true"' : ''}>`
         if (f.type === 'password') {
           const inp = group.querySelector('input')
           const eye = document.createElement('button')
-          eye.className = 'btn btn-ghost btn-xs'; eye.style.marginTop = '3px'; eye.textContent = '👁 show'
-          eye.addEventListener('click', () => { inp.type = inp.type === 'password' ? 'text' : 'password'; eye.textContent = inp.type === 'password' ? '👁 show' : '🙈 hide' })
+          eye.type = 'button'; eye.className = 'btn btn-ghost btn-xs'; eye.style.marginTop = '3px'; eye.textContent = '👁 show'; eye.setAttribute('aria-label', `Show ${flabel}`)
+          eye.addEventListener('click', () => {
+            inp.type = inp.type === 'password' ? 'text' : 'password'
+            eye.textContent = inp.type === 'password' ? '👁 show' : '🙈 hide'
+            eye.setAttribute('aria-label', `${inp.type === 'password' ? 'Show' : 'Hide'} ${flabel}`)
+          })
           group.appendChild(eye)
         }
       }
@@ -1066,21 +1303,35 @@ async function openConfig() {
   const initialProvider = currentConfig.ai_provider || 'anthropic'
   updateProviderVisibility(form, initialProvider)
 
-  $('config-modal').classList.remove('hidden')
+  openModal('config-modal', document.activeElement)
 }
 
 async function saveConfig() {
   const newConfig = { ...currentConfig }
+  let invalid = null
   for (const { fields } of CONFIG_SCHEMA) {
     for (const f of fields) {
       const el = document.querySelector(`[data-key="${f.key}"]`); if (!el) continue
       if (f.type === 'bool') newConfig[f.key] = el.checked
-      else if (f.type === 'number') newConfig[f.key] = parseFloat(el.value)
+      else if (f.type === 'number') {
+        if (!el.value.trim()) { delete newConfig[f.key]; continue }
+        const value = Number(el.value)
+        if (!Number.isFinite(value)) { el.setAttribute('aria-invalid', 'true'); invalid ||= el; continue }
+        el.removeAttribute('aria-invalid')
+        newConfig[f.key] = value
+      }
       else newConfig[f.key] = el.value   // text, password, provider-select, model-select
     }
   }
+  if (invalid) {
+    invalid.focus()
+    $('ui-status').textContent = currentLang === 'ru' ? 'Исправьте некорректное числовое значение' : 'Fix the invalid numeric value'
+    return
+  }
   await api.writeConfig(newConfig)
-  $('config-modal').classList.add('hidden')
+  currentConfig = newConfig
+  closeModal('config-modal')
+  $('ui-status').textContent = currentLang === 'ru' ? 'Настройки сохранены' : 'Settings saved'
 }
 
 // ── Start modal ───────────────────────────────────────────────────────────
@@ -1097,16 +1348,30 @@ async function startBot() {
   if (modeInput) modeInput.checked = true
   $('opt-verbose').checked = savedVerbose
   $('opt-console').checked = savedConsole
-  $('start-modal').classList.remove('hidden')
+  currentConfig = (await api.readConfig()) || currentConfig
+  updateLiveStartWarning()
+  openModal('start-modal', document.activeElement)
+}
+
+function updateLiveStartWarning() {
+  const live = Boolean(currentConfig.live_trading)
+  $('live-start-warning').classList.toggle('hidden', !live)
+  $('live-start-confirm').checked = false
+  $('btn-confirm-start').disabled = live
+  const pct = value => `${(Number(value || 0) * 100).toFixed(0)}%`
+  $('live-risk-summary').textContent = live
+    ? `${currentLang === 'ru' ? 'Позиция' : 'Position'} ${pct(currentConfig.max_position_pct ?? .15)} · ${currentLang === 'ru' ? 'общий риск' : 'total exposure'} ${pct(currentConfig.max_total_exposure_pct ?? 1)} · ${currentLang === 'ru' ? 'дневной стоп' : 'daily stop'} ${pct(currentConfig.daily_stop_loss_pct ?? .2)} · ${currentLang === 'ru' ? 'просадка' : 'drawdown'} ${pct(currentConfig.max_drawdown_pct ?? .5)}`
+    : ''
 }
 
 async function confirmStart() {
+  if (currentConfig.live_trading && !$('live-start-confirm').checked) return
   const mode = document.querySelector('input[name="bot-mode"]:checked')?.value || 'python'
   const verbose = $('opt-verbose').checked, consoleFl = $('opt-console').checked
   setSetting('bot-mode',    mode)
   setSetting('bot-verbose', verbose)
   setSetting('bot-console', consoleFl)
-  $('start-modal').classList.add('hidden')
+  closeModal('start-modal')
   const result = await api.startBot({ mode, verbose, console: consoleFl })
   if (result.error) { alert(t('startError', result.error)); return }
 
@@ -1131,6 +1396,7 @@ function initTheme() {
       const isLight = document.body.classList.contains('light')
       setSetting('theme', isLight ? 'light' : 'dark')
       btn.textContent = isLight ? '🌙' : '☀'
+      btn.setAttribute('aria-label', isLight ? 'Switch to dark theme' : 'Switch to light theme')
     })
   }
 }
@@ -1151,26 +1417,60 @@ function initLang() {
       renderPositions()
       renderTrades()
       renderLog()
+      renderAttention()
+      renderProviderHealth()
+      renderHistoryChart()
+      updateLiveStartWarning()
       updateBotStatusBadge()
     })
   }
 }
 
-// ── Modal setup ───────────────────────────────────────────────────────────
+// ── Accessible modal setup ────────────────────────────────────────────────
+const modalTriggers = new Map()
+function visibleModal() { return [...document.querySelectorAll('.modal-overlay:not(.hidden)')].pop() || null }
+
+function modalFocusables(modal) {
+  return [...modal.querySelectorAll('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])')]
+    .filter(el => !el.closest('.hidden'))
+}
+
+function openModal(id, trigger) {
+  const modal = $(id)
+  modalTriggers.set(id, trigger || document.activeElement)
+  modal.classList.remove('hidden')
+  $('app').inert = true
+  requestAnimationFrame(() => (modalFocusables(modal)[0] || modal.querySelector('.modal-box')).focus())
+}
+
+function closeModal(id) {
+  const modal = $(id)
+  if (!modal || modal.classList.contains('hidden')) return
+  modal.classList.add('hidden')
+  if (!visibleModal()) $('app').inert = false
+  const trigger = modalTriggers.get(id)
+  modalTriggers.delete(id)
+  if (trigger?.isConnected) trigger.focus()
+}
+
 function initModals() {
   $('btn-config').addEventListener('click', openConfig)
-  $('btn-close-config').addEventListener('click', () => $('config-modal').classList.add('hidden'))
+  $('btn-close-config').addEventListener('click', () => closeModal('config-modal'))
   $('btn-save-config').addEventListener('click', saveConfig)
   $('cfg-browse-btn').addEventListener('click', async () => {
     const d = await api.browseDataDir(); if (!d) return
     $('cfg-datadir-val').textContent = d; $('data-dir-label').textContent = d; await refresh()
   })
-  $('config-modal').addEventListener('click', e => { if (e.target === $('config-modal')) $('config-modal').classList.add('hidden') })
+  $('config-modal').addEventListener('click', e => { if (e.target === $('config-modal')) closeModal('config-modal') })
 
   $('btn-start-stop').addEventListener('click', startBot)
-  $('btn-close-start').addEventListener('click', () => $('start-modal').classList.add('hidden'))
+  $('btn-close-start').addEventListener('click', () => closeModal('start-modal'))
   $('btn-confirm-start').addEventListener('click', confirmStart)
-  $('start-modal').addEventListener('click', e => { if (e.target === $('start-modal')) $('start-modal').classList.add('hidden') })
+  $('live-start-confirm').addEventListener('change', () => { $('btn-confirm-start').disabled = currentConfig.live_trading && !$('live-start-confirm').checked })
+  $('start-modal').addEventListener('click', e => { if (e.target === $('start-modal')) closeModal('start-modal') })
+
+  $('btn-close-position').addEventListener('click', () => closeModal('position-modal'))
+  $('position-modal').addEventListener('click', e => { if (e.target === $('position-modal')) closeModal('position-modal') })
 
   $('btn-browse-dir').addEventListener('click', async () => {
     const d = await api.browseDataDir(); if (!d) return
@@ -1199,8 +1499,17 @@ function initModals() {
   })
 
   document.addEventListener('keydown', e => {
-    if (e.key === 'Escape') { $('config-modal').classList.add('hidden'); $('start-modal').classList.add('hidden') }
-    if (e.key === 'r' && !e.ctrlKey && !e.metaKey && document.activeElement.tagName !== 'INPUT') refresh()
+    const modal = visibleModal()
+    if (e.key === 'Escape' && modal) { e.preventDefault(); closeModal(modal.id); return }
+    if (e.key === 'Tab' && modal) {
+      const focusable = modalFocusables(modal)
+      if (!focusable.length) { e.preventDefault(); modal.querySelector('.modal-box').focus(); return }
+      const first = focusable[0], last = focusable[focusable.length - 1]
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus() }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus() }
+    }
+    const tag = document.activeElement?.tagName
+    if (!modal && e.key.toLowerCase() === 'r' && !e.ctrlKey && !e.metaKey && !['INPUT', 'SELECT', 'TEXTAREA'].includes(tag)) refresh()
   })
 }
 

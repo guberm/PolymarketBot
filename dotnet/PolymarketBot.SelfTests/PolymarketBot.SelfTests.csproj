@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\PolymarketBot\PolymarketBot.csproj" />
+    <None Include="..\..\tests\golden_execution.json" Link="golden_execution.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

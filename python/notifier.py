@@ -100,7 +100,7 @@ def _build_html(icon: str, title: str, header_bg: str, sections: list, time_str:
 
 
 def _portfolio_section(portfolio) -> dict:
-    pv = portfolio.bankroll + portfolio.total_exposure()
+    pv = portfolio.equity()
     pnl = portfolio.total_realized_pnl
     return {
         "title": "Portfolio After",
@@ -211,6 +211,8 @@ class Notifier:
                 {"title": "Risk limits", "rows": [
                     ("Max position",     f"{c.max_position_pct:.0%}",         _DARK),
                     ("Max exposure",     f"{c.max_total_exposure_pct:.0%}",   _DARK),
+                    ("Max category",     f"{c.max_category_exposure_pct:.0%}", _DARK),
+                    ("Max event",        f"{c.max_event_exposure_pct:.0%}",    _DARK),
                     ("Daily stop-loss",  f"{c.daily_stop_loss_pct:.0%}",      _DARK),
                     ("Max drawdown",     f"{c.max_drawdown_pct:.0%}",         _DARK),
                     ("Max positions",    str(c.max_concurrent_positions),     _DARK),
@@ -347,7 +349,7 @@ class Notifier:
 
     def notify_daily_reset(self, portfolio) -> None:
         t = _now()
-        pv = portfolio.bankroll + portfolio.total_exposure()
+        pv = portfolio.equity()
         html = _build_html(
             icon="🌅", title="New Trading Day",
             header_bg=_COLORS["daily"],
@@ -426,7 +428,7 @@ class Notifier:
 
     def notify_stopped(self, portfolio) -> None:
         t = _now()
-        pv = portfolio.bankroll + portfolio.total_exposure()
+        pv = portfolio.equity()
         pnl = portfolio.total_realized_pnl
         html = _build_html(
             icon="🛑", title="Bot Stopped",
