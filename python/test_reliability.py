@@ -7,6 +7,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+import requests
+
 from api_pricing import calculate_api_cost
 from config import BotConfig
 from estimator import Estimator
@@ -145,6 +147,68 @@ class ReliabilityTests(unittest.TestCase):
             untracked = Estimator(config)
             self.assertIsNone(untracked.estimate(market))
         self.assertEqual(untracked.last_api_cost_usd, 0)
+
+    def test_out_of_range_probability_is_rejected(self):
+        config = BotConfig(ai_provider="openai", openai_api_key="test", ensemble_size=1)
+        response = Mock(status_code=200)
+        response.raise_for_status.return_value = None
+        response.json.return_value = {
+            "choices": [{"message": {"content": '{"probability":70,"reasoning":"percent"}'}}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+        }
+        market = MarketInfo("c", "q", "s", .5, .5, "y", "n", 1, 1, 1, .4, .6, .2,
+                            "2030-01-01T00:00:00Z", "x", "e", "d")
+
+        with patch("estimator.requests.post", return_value=response):
+            self.assertIsNone(Estimator(config).estimate(market))
+
+    def test_openai_requests_json_response_format(self):
+        config = BotConfig(ai_provider="openai", openai_api_key="test", ensemble_size=1)
+        response = Mock(status_code=200)
+        response.raise_for_status.return_value = None
+        response.json.return_value = {
+            "choices": [{"message": {"content": '{"probability":0.5}'}}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+        }
+        market = MarketInfo("c", "q", "s", .5, .5, "y", "n", 1, 1, 1, .4, .6, .2,
+                            "2030-01-01T00:00:00Z", "x", "e", "d")
+
+        with patch("estimator.requests.post", return_value=response) as post:
+            self.assertIsNotNone(Estimator(config).estimate(market))
+
+        self.assertEqual(post.call_args.kwargs["json"]["response_format"], {"type": "json_object"})
+
+    def test_gemini_requests_json_response_schema(self):
+        config = BotConfig(ai_provider="gemini", gemini_api_key="test", ensemble_size=1)
+        response = Mock(status_code=200)
+        response.raise_for_status.return_value = None
+        response.json.return_value = {
+            "candidates": [{"content": {"parts": [{"text": '{"probability":0.5}'}]}}],
+            "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1},
+        }
+        market = MarketInfo("c", "q", "s", .5, .5, "y", "n", 1, 1, 1, .4, .6, .2,
+                            "2030-01-01T00:00:00Z", "x", "e", "d")
+
+        with patch("estimator.requests.post", return_value=response) as post:
+            self.assertIsNotNone(Estimator(config).estimate(market))
+
+        generation = post.call_args.kwargs["json"]["generationConfig"]
+        self.assertEqual(generation["responseMimeType"], "application/json")
+        self.assertEqual(generation["responseSchema"]["required"], ["probability"])
+
+    def test_provider_circuit_opens_after_consecutive_failures(self):
+        config = BotConfig(ai_provider="openai", openai_api_key="test", ensemble_size=1)
+        response = Mock(status_code=500)
+        response.raise_for_status.side_effect = requests.HTTPError("500")
+        market = MarketInfo("c", "q", "s", .5, .5, "y", "n", 1, 1, 1, .4, .6, .2,
+                            "2030-01-01T00:00:00Z", "x", "e", "d")
+
+        with patch("estimator.requests.post", return_value=response) as post:
+            estimator = Estimator(config)
+            for _ in range(4):
+                self.assertIsNone(estimator.estimate(market))
+
+        self.assertEqual(post.call_count, 3)
 
     def test_multi_provider_calls_overlap(self):
         config = BotConfig(

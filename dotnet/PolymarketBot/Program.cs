@@ -102,8 +102,11 @@ using var loggerFactory = LoggerFactory.Create(builder =>
 });
 
 var log = loggerFactory.CreateLogger("bot.main");
+var runId = Guid.NewGuid().ToString("N")[..12];
+using var runLogScope = log.BeginScope(new Dictionary<string, object?> { ["run_id"] = runId });
 
 var mode = config.LiveTrading ? "LIVE" : "PAPER";
+log.LogInformation("Run {RunId} started", runId);
 log.LogInformation(new string('=', 60));
 log.LogInformation("Polymarket Bot (.NET)");
 log.LogInformation("Mode: {Mode} | Config bankroll: ${Bankroll:F2}", mode, config.InitialBankroll);
@@ -352,6 +355,12 @@ var fatalExitCode = 0;
 while (!cts.Token.IsCancellationRequested)
 {
     cycle++;
+    var cycleStarted = System.Diagnostics.Stopwatch.StartNew();
+    using var cycleLogScope = log.BeginScope(new Dictionary<string, object?>
+    {
+        ["cycle_id"] = $"{runId}:{cycle}",
+        ["cycle"] = cycle,
+    });
 
     if (portfolio.IsHalted)
     {
@@ -1038,9 +1047,11 @@ while (!cts.Token.IsCancellationRequested)
         // Cycle summary
         log.LogInformation(
             "Cycle {Cycle}: {Trades} trades | Bankroll: ${Bankroll:F2} | Positions: {Positions} | " +
-            "Exposure: ${Exposure:F2} | API today: ${DailyApiCost:F4} | API total: ${TotalApiCost:F4} | Realized PnL: ${PnL:+0.00;-0.00}",
+            "Exposure: ${Exposure:F2} | API today: ${DailyApiCost:F4} | API total: ${TotalApiCost:F4} | " +
+            "Realized PnL: ${PnL:+0.00;-0.00} | Duration: {DurationMs}ms",
             cycle, tradesThisCycle, portfolio.Bankroll, portfolio.Positions.Count,
-            portfolio.TotalExposure(), portfolio.DailyApiCost, portfolio.TotalApiCost, portfolio.TotalRealizedPnl);
+            portfolio.TotalExposure(), portfolio.DailyApiCost, portfolio.TotalApiCost, portfolio.TotalRealizedPnl,
+            cycleStarted.ElapsedMilliseconds);
 
         if (console_)
         {

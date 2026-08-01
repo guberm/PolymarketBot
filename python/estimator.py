@@ -60,12 +60,17 @@ def _build_user_prompt(market: MarketInfo) -> str:
 
 
 class Estimator:
+    _CIRCUIT_FAILURE_THRESHOLD = 3
+    _CIRCUIT_COOLDOWN_SECONDS = 300
+
     def __init__(self, config: BotConfig):
         self.config = config
         self._provider = config.ai_provider.lower()
         self.last_api_cost_usd = 0.0
         self._rate_limited_this_cycle: set[str] = set()
         self._rate_limit_lock = threading.Lock()
+        self._provider_failures: dict[str, int] = {}
+        self._provider_open_until: dict[str, float] = {}
         self._calibration_stats = {}
         self._refresh_calibration()
 
@@ -369,15 +374,41 @@ class Estimator:
             if provider in self._rate_limited_this_cycle:
                 log.debug(f"{provider} skipped — rate-limited this cycle")
                 return None
+            open_until = self._provider_open_until.get(provider, 0)
+            if open_until > time.monotonic():
+                log.debug(f"{provider} skipped — circuit open")
+                return None
+            if open_until:
+                self._provider_open_until.pop(provider, None)
+                self._provider_failures.pop(provider, None)
         if provider == "anthropic":
-            return self._call_anthropic(market)
+            result = self._call_anthropic(market)
         elif provider == "gemini":
-            return self._call_gemini(market)
+            result = self._call_gemini(market)
         elif provider in ("openai", "openrouter", "azure_openai"):
-            return self._call_openai_compat(market, provider)
+            result = self._call_openai_compat(market, provider)
         else:
             log.error(f"Unknown AI provider: {provider}")
             return None
+        if result is not None and result[0] is not None:
+            self._record_provider_success(provider)
+        else:
+            self._record_provider_failure(provider)
+        return result
+
+    def _record_provider_success(self, provider: str) -> None:
+        with self._rate_limit_lock:
+            self._provider_failures.pop(provider, None)
+            self._provider_open_until.pop(provider, None)
+
+    def _record_provider_failure(self, provider: str) -> None:
+        with self._rate_limit_lock:
+            failures = self._provider_failures.get(provider, 0) + 1
+            self._provider_failures[provider] = failures
+            if failures < self._CIRCUIT_FAILURE_THRESHOLD:
+                return
+            self._provider_open_until[provider] = time.monotonic() + self._CIRCUIT_COOLDOWN_SECONDS
+        log.warning(f"{provider} circuit opened for {self._CIRCUIT_COOLDOWN_SECONDS // 60} minutes")
 
     def _parse_json_response(self, text: str):
         """Parse probability JSON from model response. Returns (prob, reasoning) or None."""
@@ -388,7 +419,9 @@ class Estimator:
             data = json.loads(text)
             prob = float(data["probability"])
             reasoning = data.get("reasoning", "")
-            prob = max(0.02, min(0.98, prob))
+            if not math.isfinite(prob) or not 0.02 <= prob <= 0.98:
+                log.debug(f"Rejected out-of-range probability: {prob}")
+                return None
             return prob, reasoning
         except (json.JSONDecodeError, KeyError, ValueError) as e:
             log.debug(f"Failed to parse estimate response: {e}")
@@ -466,6 +499,7 @@ class Estimator:
             ],
             "temperature": self.config.ensemble_temperature,
             "max_tokens": self.config.max_estimate_tokens,
+            "response_format": {"type": "json_object"},
         }
 
         try:
@@ -502,6 +536,15 @@ class Estimator:
             "generationConfig": {
                 "temperature": self.config.ensemble_temperature,
                 "maxOutputTokens": self.config.max_estimate_tokens,
+                "responseMimeType": "application/json",
+                "responseSchema": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "probability": {"type": "NUMBER"},
+                        "reasoning": {"type": "STRING"},
+                    },
+                    "required": ["probability"],
+                },
             },
         }
         try:
@@ -544,6 +587,9 @@ class Estimator:
     def _mark_rate_limited(self, provider: str) -> None:
         with self._rate_limit_lock:
             self._rate_limited_this_cycle.add(provider)
+            self._provider_failures[provider] = self._CIRCUIT_FAILURE_THRESHOLD
+            self._provider_open_until[provider] = time.monotonic() + self._CIRCUIT_COOLDOWN_SECONDS
+        log.warning(f"{provider} circuit opened after rate-limit exhaustion")
 
     # ── API key validation ────────────────────────────────────────────────
 

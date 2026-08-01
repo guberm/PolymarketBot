@@ -260,6 +260,76 @@ var invalidJsonEstimator = new Estimator(invalidJsonConfig, invalidJsonHttp,
 if (await invalidJsonEstimator.EstimateAsync(watchMarket) is not null)
     throw new Exception("Invalid model JSON should not produce an estimate");
 Near(2, invalidJsonEstimator.LastApiCostUsd);
+
+using var outOfRangeHttp = new HttpClient(new StaticResponseHandler(
+    """{"choices":[{"message":{"content":"{\"probability\":70,\"reasoning\":\"percent\"}"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}"""));
+var outOfRangeEstimator = new Estimator(invalidJsonConfig, outOfRangeHttp,
+    loggerFactory.CreateLogger<Estimator>());
+if (await outOfRangeEstimator.EstimateAsync(watchMarket) is not null)
+    throw new Exception("Out-of-range model probability should be rejected");
+
+var formatCapture = new RequestCaptureHandler();
+using (var formatHttp = new HttpClient(formatCapture))
+{
+    var formatEstimator = new Estimator(invalidJsonConfig, formatHttp,
+        loggerFactory.CreateLogger<Estimator>());
+    if (await formatEstimator.EstimateAsync(watchMarket) is null)
+        throw new Exception("Structured-output request did not produce an estimate");
+}
+using (var requestBody = JsonDocument.Parse(formatCapture.RequestBody
+    ?? throw new Exception("Estimator request body was not captured")))
+{
+    if (requestBody.RootElement.GetProperty("response_format").GetProperty("type").GetString() != "json_object")
+        throw new Exception("OpenAI-compatible request must require JSON output");
+}
+
+var geminiFormatCapture = new RequestCaptureHandler();
+using (var formatHttp = new HttpClient(geminiFormatCapture))
+{
+    var formatEstimator = new Estimator(new BotConfig
+    {
+        AiProvider = "gemini", GeminiApiKey = "test", EnsembleSize = 1,
+    }, formatHttp, loggerFactory.CreateLogger<Estimator>());
+    if (await formatEstimator.EstimateAsync(watchMarket) is null)
+        throw new Exception("Gemini structured-output request did not produce an estimate");
+}
+using (var requestBody = JsonDocument.Parse(geminiFormatCapture.RequestBody
+    ?? throw new Exception("Gemini request body was not captured")))
+{
+    var generation = requestBody.RootElement.GetProperty("generationConfig");
+    if (generation.GetProperty("responseMimeType").GetString() != "application/json" ||
+        generation.GetProperty("responseSchema").GetProperty("required")[0].GetString() != "probability")
+        throw new Exception("Gemini request must require the probability JSON schema");
+}
+
+var failingProvider = new StatusResponseHandler(HttpStatusCode.InternalServerError);
+using (var failingHttp = new HttpClient(failingProvider))
+{
+    var circuitEstimator = new Estimator(invalidJsonConfig, failingHttp,
+        loggerFactory.CreateLogger<Estimator>());
+    for (var attempt = 0; attempt < 4; attempt++)
+        if (await circuitEstimator.EstimateAsync(watchMarket) is not null)
+            throw new Exception("Failed provider unexpectedly produced an estimate");
+}
+if (failingProvider.RequestCount != 3)
+    throw new Exception($"Provider circuit should open after 3 failures, got {failingProvider.RequestCount} requests");
+
+using (var logBuffer = new MemoryStream())
+using (var logWriter = new StreamWriter(logBuffer, System.Text.Encoding.UTF8, leaveOpen: true) { AutoFlush = true })
+using (var structuredLoggerFactory = LoggerFactory.Create(builder =>
+    builder.AddProvider(new JsonFileLoggerProvider(logWriter))))
+{
+    var structuredLog = structuredLoggerFactory.CreateLogger("selftest");
+    using (structuredLog.BeginScope(new Dictionary<string, object?> { ["run_id"] = "run-1" }))
+        structuredLog.LogInformation("Cycle {Cycle} complete", 7);
+    logWriter.Flush();
+    logBuffer.Position = 0;
+    using var logJson = JsonDocument.Parse(new StreamReader(logBuffer).ReadToEnd());
+    var properties = logJson.RootElement.GetProperty("properties");
+    if (properties.GetProperty("run_id").GetString() != "run-1" ||
+        properties.GetProperty("Cycle").GetInt32() != 7)
+        throw new Exception("Structured logger dropped scope or message properties");
+}
 var untrackedEstimator = new Estimator(new BotConfig
 {
     AiProvider = "openai", OpenAiApiKey = "test", EnsembleSize = 1,
@@ -338,6 +408,34 @@ sealed class StaticResponseHandler(string body) : HttpMessageHandler
 {
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(body) });
+}
+
+sealed class RequestCaptureHandler : HttpMessageHandler
+{
+    public string? RequestBody { get; private set; }
+
+    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        RequestBody = await request.Content!.ReadAsStringAsync(cancellationToken);
+        var response = request.RequestUri!.AbsoluteUri.Contains("generateContent")
+            ? """{"candidates":[{"content":{"parts":[{"text":"{\"probability\":0.5}"}]}}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1}}"""
+            : """{"choices":[{"message":{"content":"{\"probability\":0.5}"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}""";
+        return new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(response)
+        };
+    }
+}
+
+sealed class StatusResponseHandler(HttpStatusCode statusCode) : HttpMessageHandler
+{
+    public int RequestCount { get; private set; }
+
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        RequestCount++;
+        return Task.FromResult(new HttpResponseMessage(statusCode) { Content = new StringContent("{}") });
+    }
 }
 
 sealed class ClobV2CaptureHandler : HttpMessageHandler

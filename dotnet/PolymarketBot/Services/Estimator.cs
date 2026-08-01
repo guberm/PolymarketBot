@@ -8,6 +8,8 @@ namespace PolymarketBot.Services;
 
 public sealed class Estimator
 {
+    private const int CircuitFailureThreshold = 3;
+    private static readonly TimeSpan CircuitCooldown = TimeSpan.FromMinutes(5);
     private const string SystemPrompt =
         "You are a calibrated probability estimator for prediction markets.\n" +
         "Given a market question, estimate the TRUE probability that the outcome resolves YES.\n" +
@@ -28,6 +30,8 @@ public sealed class Estimator
 
     // Providers that hit 429 this cycle — skip them until ResetCycle()
     private readonly ConcurrentDictionary<string, byte> _rateLimitedThisCycle = new();
+    private readonly ConcurrentDictionary<string, int> _providerFailures = new();
+    private readonly ConcurrentDictionary<string, DateTimeOffset> _providerOpenUntil = new();
     public double LastApiCostUsd { get; private set; }
 
     public void ResetCycle()
@@ -289,6 +293,9 @@ public sealed class Estimator
 
     private async Task<CallResult?> SingleCallAsync(MarketInfo market, string provider, CancellationToken ct)
     {
+        if (IsProviderCircuitOpen(provider))
+            return null;
+
         for (var attempt = 0; attempt <= 3; attempt++)
         {
             try
@@ -308,6 +315,7 @@ public sealed class Estimator
                     _log.LogError("{Provider} {Status}: giving up after {Max} retries for {Question} — skipping for rest of cycle",
                         provider, status, 3, Truncate(market.Question, 40));
                     _rateLimitedThisCycle.TryAdd(provider, 0);
+                    OpenProviderCircuit(provider, "rate-limit exhaustion");
                     return null;
                 }
 
@@ -315,24 +323,67 @@ public sealed class Estimator
                 {
                     _log.LogError("{Provider} HTTP {Status}: {Body}",
                         provider, status, body[..Math.Min(body.Length, 200)]);
+                    RecordProviderFailure(provider);
                     return null;
                 }
 
-                return ParseProviderResponse(provider, body);
+                var result = ParseProviderResponse(provider, body);
+                if (result?.Probability is double)
+                    RecordProviderSuccess(provider);
+                else
+                    RecordProviderFailure(provider);
+                return result;
             }
             catch (JsonException ex)
             {
                 _log.LogDebug("{Provider} parse failed: {Error}", provider, ex.Message);
+                RecordProviderFailure(provider);
                 return null;
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 _log.LogDebug("{Provider} call failed: {Error}", provider, ex.Message);
+                RecordProviderFailure(provider);
                 return null;
             }
         }
 
         return null;
+    }
+
+    private bool IsProviderCircuitOpen(string provider)
+    {
+        if (!_providerOpenUntil.TryGetValue(provider, out var openUntil)) return false;
+        if (openUntil > DateTimeOffset.UtcNow)
+        {
+            _log.LogDebug("{Provider} skipped — circuit open until {OpenUntil}", provider, openUntil);
+            return true;
+        }
+        _providerOpenUntil.TryRemove(provider, out _);
+        _providerFailures.TryRemove(provider, out _);
+        return false;
+    }
+
+    private void RecordProviderSuccess(string provider)
+    {
+        _providerFailures.TryRemove(provider, out _);
+        _providerOpenUntil.TryRemove(provider, out _);
+    }
+
+    private void RecordProviderFailure(string provider)
+    {
+        var failures = _providerFailures.AddOrUpdate(provider, 1, (_, count) => count + 1);
+        if (failures >= CircuitFailureThreshold)
+            OpenProviderCircuit(provider, $"{failures} consecutive failures");
+    }
+
+    private void OpenProviderCircuit(string provider, string reason)
+    {
+        var openUntil = DateTimeOffset.UtcNow.Add(CircuitCooldown);
+        _providerFailures[provider] = CircuitFailureThreshold;
+        if (_providerOpenUntil.TryAdd(provider, openUntil))
+            _log.LogWarning("{Provider} circuit opened for {Minutes:F0} minutes ({Reason})",
+                provider, CircuitCooldown.TotalMinutes, reason);
     }
 
     // ActiveModel is the model for the currently configured single provider (used as fallback)
@@ -427,6 +478,7 @@ public sealed class Estimator
             },
             temperature = _config.EnsembleTemperature,
             max_tokens = _config.MaxEstimateTokens,
+            response_format = new { type = "json_object" },
         });
         req.RequestUri = new Uri(url);
         req.Content = new StringContent(body, Encoding.UTF8, "application/json");
@@ -464,6 +516,17 @@ public sealed class Estimator
             {
                 temperature = _config.EnsembleTemperature,
                 maxOutputTokens = _config.MaxEstimateTokens,
+                responseMimeType = "application/json",
+                responseSchema = new
+                {
+                    type = "OBJECT",
+                    properties = new
+                    {
+                        probability = new { type = "NUMBER" },
+                        reasoning = new { type = "STRING" },
+                    },
+                    required = new[] { "probability" },
+                },
             }
         });
         var req = new HttpRequestMessage(HttpMethod.Post, url)
@@ -522,8 +585,10 @@ public sealed class Estimator
             }
             var doc = JsonDocument.Parse(text);
             var prob = doc.RootElement.GetProperty("probability").GetDouble();
+            if (!double.IsFinite(prob) || prob is < 0.02 or > 0.98)
+                return (-1, "");
             var reasoning = doc.RootElement.TryGetProperty("reasoning", out var r) ? r.GetString() ?? "" : "";
-            return (Math.Clamp(prob, 0.02, 0.98), reasoning);
+            return (prob, reasoning);
         }
         catch
         {

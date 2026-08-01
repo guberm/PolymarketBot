@@ -39,6 +39,10 @@ assert.strictEqual(health.filter(x => x.configured).length, 2)
 assert.strictEqual(health.find(x => x.provider === 'openai').sampleCount, 2)
 assert(Math.abs(health.find(x => x.provider === 'openai').brier - .065) < 1e-9)
 assert(Math.abs(health.filter(x => x.configured).reduce((s, x) => s + x.weight, 0) - 1) < 1e-9)
+const circuitHealth = buildProviderHealth([], [
+  { timestamp: '2026-07-31T19:59:00Z', level: 'WARNING', message: 'openai circuit opened for 5 minutes' },
+], { openai_enabled: true, openai_api_key: 'secret' }, now)
+assert.strictEqual(circuitHealth.find(x => x.provider === 'openai').degraded, true)
 
 assert.deepStrictEqual(buildHistoryPoint(portfolio), {
   timestamp: now / 1000, equity: 8, bankroll: 8, liquidation: 0,
@@ -61,6 +65,8 @@ assert.strictEqual(clampPaneSize('bad', 100, 300), 100)
 const chunk = parseProcessLogChunk('', '{"timestamp":"2026-07-31T20:00:00Z","level":"ERROR","message":"blocked"}\npartial', 'INFO', 'fallback')
 assert.deepStrictEqual(chunk.entries, [{ timestamp: '2026-07-31T20:00:00Z', level: 'ERROR', message: 'blocked' }])
 assert.strictEqual(chunk.remaining, 'partial')
+const structuredChunk = parseProcessLogChunk('', '{"timestamp":"2026-07-31T20:00:00Z","level":"INFO","message":"done","properties":{"run_id":"r1","cycle":2}}\n')
+assert.deepStrictEqual(structuredChunk.entries[0].properties, { run_id: 'r1', cycle: 2 })
 assert.strictEqual(dedupeLogs([chunk.entries[0], { ...chunk.entries[0] }]).length, 1)
 const fallback = new Date('2026-07-31T20:00:00Z')
 const localTime = [fallback.getHours(), fallback.getMinutes(), fallback.getSeconds()].map(value => String(value).padStart(2, '0')).join(':')
