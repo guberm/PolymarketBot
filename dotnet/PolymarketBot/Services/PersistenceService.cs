@@ -65,10 +65,11 @@ public static class PersistenceService
     {
         Directory.CreateDirectory(dataDir);
         var path = Path.Combine(dataDir, EstimatesFile);
+        var now = DateTimeOffset.UtcNow;
         var record = new
         {
             RecordType = "evaluation",
-            Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0,
+            Timestamp = now.ToUnixTimeMilliseconds() / 1000.0,
             ConditionId = market.ConditionId,
             market.Question,
             market.Category,
@@ -82,6 +83,14 @@ public static class PersistenceService
             estimate.ProviderEstimates,
             MarketYesPrice = market.OutcomeYesPrice,
             MarketNoPrice = market.OutcomeNoPrice,
+            market.Liquidity,
+            market.Volume,
+            Volume_24hr = market.Volume24Hr,
+            market.BestBid,
+            market.BestAsk,
+            market.Spread,
+            market.EndDate,
+            TimeToResolutionHours = HoursUntil(market.EndDate, now),
             Side = signal?.Side.ToString() ?? "",
             ExecutionVwap = signal?.ExecutionPrice ?? 0,
             LimitPrice = signal?.LimitPrice ?? 0,
@@ -94,6 +103,12 @@ public static class PersistenceService
         };
         File.AppendAllText(path, JsonSerializer.Serialize(record, JsonLineOpts) + Environment.NewLine);
         if (trackWatch) TrackResolution(market, dataDir);
+    }
+
+    private static double? HoursUntil(string endDate, DateTimeOffset now)
+    {
+        if (!DateTimeOffset.TryParse(endDate, out var end)) return null;
+        return Math.Max(0, (end - now).TotalHours);
     }
 
     public static void AppendEstimateResolution(

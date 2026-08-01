@@ -182,9 +182,12 @@ Every completed estimate is appended to `data/estimates.jsonl`, including the or
 cd python
 python analyze_estimates.py --estimates ../data/estimates.jsonl
 python replay_estimates.py --estimates ../data/estimates.jsonl --min-edge 0.08 --kelly-fraction 0.10
+python historical_analogs.py --estimates ../data/estimates.jsonl
 ```
 
 The replay is deterministic and offline: it applies sizing and risk overrides to the shared journal schema emitted by both the Python and .NET bots. Calibration-weighted live aggregation is opt-in and stays equal-weighted until every active provider has at least `calibration_min_samples` resolved predictions.
+
+`historical_analogs.py` is an offline, leak-free nearest-neighbor baseline. It represents each market as one independent lifecycle episode, uses only candidates that had already resolved when the target was observed, and compares its walk-forward Brier score and log loss with both the AI estimate and market price. New journal rows include liquidity, volume, spread, order-book levels, end date, and time to resolution. The report keeps `live_gate.ready=false` until at least 100 predictions beat both baselines across three chronological folds; it never changes live signals or execution.
 
 ## Optional Kalshi shadow comparison
 
@@ -450,6 +453,7 @@ python/                            ← Python implementation
   kalshi_shadow.py                   Optional read-only cross-market reference
   runtime_safety.py                  Cross-language single-instance lock
   analyze_estimates.py               Brier score and calibration report
+  historical_analogs.py              Leak-free historical analog evaluation
   replay_estimates.py                Deterministic offline decision replay
   market_scanner.py                  Gamma API + fresh CLOB books
   portfolio.py                       Kelly sizing, risk, cooldown, ghost removal

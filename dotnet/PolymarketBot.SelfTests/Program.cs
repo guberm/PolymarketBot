@@ -150,11 +150,27 @@ using (var second = new InstanceLock(lockDir))
 Directory.Delete(lockDir, true);
 
 var watchDir = Path.Combine(Path.GetTempPath(), $"polymarket-watch-{Guid.NewGuid()}");
+var contextMarket = new MarketInfo { ConditionId = "context", Question = "context", Slug = "",
+    TokenIdYes = "y", TokenIdNo = "n", OutcomeYesPrice = .5, OutcomeNoPrice = .5,
+    Liquidity = 12_345, Volume = 67_890, Volume24Hr = 2_345,
+    BestBid = .49, BestAsk = .51, Spread = .02,
+    EndDate = DateTimeOffset.UtcNow.AddHours(6).ToString("o") };
+var watchEstimate = new Estimate { MarketConditionId = "watch", Question = "watch",
+    FairProbability = .5, RawEstimates = [.5] };
+PersistenceService.AppendEstimateEvaluation(contextMarket, watchEstimate, null, "test", "skip", "test", watchDir,
+    trackWatch: false);
+using (var evaluation = JsonDocument.Parse(File.ReadLines(Path.Combine(watchDir, "estimates.jsonl")).First()))
+{
+    var root = evaluation.RootElement;
+    Near(12_345, root.GetProperty("liquidity").GetDouble());
+    Near(2_345, root.GetProperty("volume_24hr").GetDouble());
+    Near(.02, root.GetProperty("spread").GetDouble());
+    var remaining = root.GetProperty("time_to_resolution_hours").GetDouble();
+    if (remaining is < 5.9 or > 6.1) throw new Exception("Time-to-resolution context was not persisted");
+}
 var watchMarket = new MarketInfo { ConditionId = "watch", Question = "watch", Slug = "",
     TokenIdYes = "y", TokenIdNo = "n", OutcomeYesPrice = .5, OutcomeNoPrice = .5,
     EndDate = "2020-01-01T00:00:00Z" };
-var watchEstimate = new Estimate { MarketConditionId = "watch", Question = "watch",
-    FairProbability = .5, RawEstimates = [.5] };
 PersistenceService.AppendEstimateEvaluation(watchMarket, watchEstimate, null, "test", "skip", "test", watchDir);
 if (!PersistenceService.GetResolutionCandidates(watchDir, 10).Contains("watch"))
     throw new Exception("Resolution watchlist failed");
