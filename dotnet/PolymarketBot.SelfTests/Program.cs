@@ -119,9 +119,19 @@ gracePortfolio.Positions.Add(new Position { ConditionId = "g", Question = "g", S
     TokenId = "g", EntryPrice = .5, SizeUsd = 5, Shares = 10, CurrentPrice = .4, Category = "x" });
 gracePortfolio.UpdatePositionQuotes(new Dictionary<string, ExecutionQuote>());
 Near(.3, gracePortfolio.Positions[0].CurrentPrice);
+if (gracePortfolio.GenerateExitSignals().Count != 0)
+    throw new Exception("Fallback quote valuation must not create an executable exit signal");
 gracePortfolio.UpdatePositionQuotes(new Dictionary<string, ExecutionQuote>());
 gracePortfolio.UpdatePositionQuotes(new Dictionary<string, ExecutionQuote>());
 Near(0, gracePortfolio.Positions[0].CurrentPrice);
+
+var freshExitPortfolio = new Portfolio(new BotConfig(), loggerFactory.CreateLogger<Portfolio>());
+freshExitPortfolio.Positions.Add(new Position { ConditionId = "f", Question = "f", Side = Side.YES,
+    TokenId = "f", EntryPrice = .5, SizeUsd = 5, Shares = 10, CurrentPrice = .4, Category = "x" });
+freshExitPortfolio.UpdatePositionQuotes(new Dictionary<string, ExecutionQuote>
+    { ["f"] = new(10, 10, 3, .3, .3, true) });
+if (freshExitPortfolio.GenerateExitSignals() is not [{ ExitReason: "stop_loss" }])
+    throw new Exception("Fresh executable loss quote should create a stop-loss signal");
 
 var partialPortfolio = new Portfolio(new BotConfig { InitialBankroll = 10 }, loggerFactory.CreateLogger<Portfolio>());
 partialPortfolio.Positions.Add(new Position { ConditionId = "p", Question = "p", Side = Side.YES,

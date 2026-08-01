@@ -10,7 +10,7 @@ from unittest.mock import Mock, patch
 from api_pricing import calculate_api_cost
 from config import BotConfig
 from estimator import Estimator
-from execution import BookLevel, calculate_buy_quote, calculate_sell_quote
+from execution import BookLevel, ExecutionQuote, calculate_buy_quote, calculate_sell_quote
 from market_scanner import MarketScanner
 from models import Estimate, MarketInfo, Position, Side, Signal
 from notifier import Notifier
@@ -92,10 +92,16 @@ class ReliabilityTests(unittest.TestCase):
         portfolio.positions = [Position("m", "q", Side.YES, "t", .5, 5, 10, .4, -1, "x")]
         portfolio.update_position_quotes({})
         self.assertAlmostEqual(portfolio.positions[0].current_price, .3)
+        self.assertEqual(portfolio.generate_exit_signals(), [])
         portfolio.update_position_quotes({})
         self.assertAlmostEqual(portfolio.positions[0].current_price, .3)
         portfolio.update_position_quotes({})
         self.assertEqual(portfolio.positions[0].current_price, 0)
+
+        fresh = Portfolio(BotConfig())
+        fresh.positions = [Position("m", "q", Side.YES, "t", .5, 5, 10, .4, -1, "x")]
+        fresh.update_position_quotes({"t": ExecutionQuote(10, 10, 3, .3, .3, True)})
+        self.assertEqual([signal.exit_reason for signal in fresh.generate_exit_signals()], ["stop_loss"])
 
     def test_partial_sell_reduces_position(self):
         portfolio = Portfolio(BotConfig(initial_bankroll=10))

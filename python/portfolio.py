@@ -418,6 +418,11 @@ class Portfolio:
         """Tier 1: free rule-based exit checks on all positions."""
         signals = []
         for pos in self.positions:
+            # Haircut/zero fallback prices protect valuation but are not executable quotes.
+            if not pos.book_depth_complete or pos.liquidation_limit_price <= 0:
+                log.debug(f"Skip exit review: no executable bid depth for {pos.question[:40]}...")
+                continue
+
             # Skip unsellable positions: penny prices or below CLOB minimum (5 tokens)
             if pos.current_price < 0.01:
                 log.debug(f"Skip review: {pos.question[:40]}... (price {pos.current_price:.4f} < $0.01)")
