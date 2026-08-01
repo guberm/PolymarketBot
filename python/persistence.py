@@ -3,7 +3,7 @@
 import json
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 
@@ -102,9 +102,10 @@ def append_estimate_evaluation(
     """Append one final decision for a successfully evaluated market."""
     os.makedirs(data_dir, exist_ok=True)
     path = os.path.join(data_dir, _ESTIMATES_FILE)
+    timestamp = time.time()
     record = {
         "record_type": "evaluation",
-        "timestamp": time.time(),
+        "timestamp": timestamp,
         "condition_id": market.condition_id,
         "question": market.question,
         "category": market.category,
@@ -118,6 +119,14 @@ def append_estimate_evaluation(
         "provider_estimates": estimate.provider_estimates,
         "market_yes_price": market.outcome_yes_price,
         "market_no_price": market.outcome_no_price,
+        "liquidity": market.liquidity,
+        "volume": market.volume,
+        "volume_24hr": market.volume_24hr,
+        "best_bid": market.best_bid,
+        "best_ask": market.best_ask,
+        "spread": market.spread,
+        "end_date": market.end_date,
+        "time_to_resolution_hours": _time_to_resolution_hours(market.end_date, timestamp),
         "side": signal.side.value if signal else "",
         "execution_vwap": signal.execution_price if signal else 0.0,
         "limit_price": signal.limit_price if signal else 0.0,
@@ -132,6 +141,18 @@ def append_estimate_evaluation(
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
     if track_watch:
         track_resolution(market, data_dir)
+
+
+def _time_to_resolution_hours(end_date: str, timestamp: float) -> Optional[float]:
+    if not end_date:
+        return None
+    try:
+        end = datetime.fromisoformat(end_date.replace("Z", "+00:00"))
+        if end.tzinfo is None:
+            end = end.replace(tzinfo=timezone.utc)
+        return max(0.0, (end.timestamp() - timestamp) / 3600)
+    except (ValueError, OverflowError, OSError):
+        return None
 
 
 def append_estimate_resolution(
