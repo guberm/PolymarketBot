@@ -465,6 +465,14 @@ public sealed class Portfolio
         var signals = new List<ExitSignal>();
         foreach (var pos in Positions)
         {
+            // Haircut/zero fallback prices protect valuation but are not executable quotes.
+            if (!pos.BookDepthComplete || pos.LiquidationLimitPrice <= 0)
+            {
+                _log.LogDebug("Skip exit review: no executable bid depth for {Question}",
+                    Truncate(pos.Question, 40));
+                continue;
+            }
+
             // Skip unsellable positions: penny prices or below CLOB minimum (5 tokens)
             if (pos.CurrentPrice < 0.01)
             {
