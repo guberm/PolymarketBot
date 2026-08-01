@@ -99,7 +99,7 @@ function buildProviderHealth(estimates = [], logs = [], config = {}, now = Date.
   const weights = calibrationWeights(stats, configured, config)
   const recentLogs = logs.filter(log => now - asTime(log.timestamp) <= 60 * 60 * 1000)
   return PROVIDERS.map(provider => {
-    const degraded = recentLogs.some(log => new RegExp(provider.replace('_', '[ _-]?'), 'i').test(String(log.message || '')) && /\b429\b|rate.?limit|failed|error/i.test(String(log.message || '')))
+    const degraded = recentLogs.some(log => new RegExp(provider.replace('_', '[ _-]?'), 'i').test(String(log.message || '')) && /\b429\b|rate.?limit|circuit.?open|failed|error/i.test(String(log.message || '')))
     return {
       provider,
       enabled: config[`${provider}_enabled`] !== false,
@@ -159,7 +159,12 @@ function parseProcessLogChunk(buffer = '', chunk = '', fallbackLevel = 'INFO', f
     try {
       const parsed = JSON.parse(line)
       if (parsed && typeof parsed === 'object' && parsed.message !== undefined)
-        return { timestamp: parsed.timestamp || fallbackTimestamp, level: parsed.level || fallbackLevel, message: String(parsed.message) }
+        return {
+          timestamp: parsed.timestamp || fallbackTimestamp,
+          level: parsed.level || fallbackLevel,
+          message: String(parsed.message),
+          ...(parsed.properties && typeof parsed.properties === 'object' ? { properties: parsed.properties } : {}),
+        }
     } catch {}
     const consoleLine = line.match(/^\[(\d{2}):(\d{2}):(\d{2})\]\s+(trce|dbug|info|warn|fail|crit):\s+\S+\[\d+\]\s+(.*)$/i)
     if (consoleLine) {
