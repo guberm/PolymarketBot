@@ -1,7 +1,7 @@
 'use strict'
 const assert = require('assert')
 const fs = require('fs')
-const { buildAttention, buildProviderHealth, buildHistoryPoint, buildHistorySeries, clampPaneSize, parseProcessLogChunk, dedupeLogs, formatLogText } = require('./dashboard-model')
+const { buildAttention, buildProviderHealth, buildHistoryPoint, buildHistorySeries, buildBotEnvironment, buildVpnLaunch, clampPaneSize, connectionMode, parseProcessLogChunk, dedupeLogs, formatLogText, toWslPath } = require('./dashboard-model')
 
 const now = Date.parse('2026-07-31T20:00:00Z')
 const portfolio = {
@@ -62,6 +62,58 @@ assert.strictEqual(clampPaneSize(400, 100, 300), 300)
 assert.strictEqual(clampPaneSize(180, 100, 300), 180)
 assert.strictEqual(clampPaneSize('bad', 100, 300), 100)
 
+const proxyEnv = buildBotEnvironment({ PATH: 'kept' }, {
+  proxy_enabled: true,
+  proxy_url: 'http://user:pass@127.0.0.1:8080',
+})
+assert.strictEqual(proxyEnv.PATH, 'kept')
+assert.strictEqual(proxyEnv.HTTP_PROXY, 'http://user:pass@127.0.0.1:8080/')
+assert.strictEqual(proxyEnv.HTTPS_PROXY, proxyEnv.HTTP_PROXY)
+assert.strictEqual(proxyEnv.http_proxy, proxyEnv.HTTP_PROXY)
+assert.strictEqual(proxyEnv.https_proxy, proxyEnv.HTTP_PROXY)
+assert.strictEqual(proxyEnv.ALL_PROXY, proxyEnv.HTTP_PROXY)
+assert.strictEqual(proxyEnv.all_proxy, proxyEnv.HTTP_PROXY)
+const connectionEnv = buildBotEnvironment({}, {
+  proxy_enabled: true,
+  proxy_type: 'https',
+  proxy_host: 'proxy.example.com',
+  proxy_port: 8443,
+  proxy_username: 'user@example.com',
+  proxy_password: 'p@ss word',
+  proxy_bypass: 'localhost,127.0.0.1',
+})
+assert.strictEqual(connectionEnv.HTTPS_PROXY, 'https://user%40example.com:p%40ss%20word@proxy.example.com:8443/')
+assert.strictEqual(connectionEnv.NO_PROXY, 'localhost,127.0.0.1')
+assert.strictEqual(connectionEnv.no_proxy, connectionEnv.NO_PROXY)
+assert.deepStrictEqual(buildBotEnvironment({ PATH: 'kept' }, { proxy_enabled: false }), { PATH: 'kept' })
+assert.throws(
+  () => buildBotEnvironment({}, { proxy_enabled: true, proxy_url: 'socks5://127.0.0.1:1080' }),
+  /HTTP or HTTPS/,
+)
+assert.throws(() => buildBotEnvironment({}, { proxy_enabled: true, proxy_url: '' }), /Proxy URL/)
+assert.throws(() => buildBotEnvironment({}, { proxy_enabled: true, proxy_type: 'socks5', proxy_host: 'localhost' }), /HTTP or HTTPS/)
+assert.throws(() => buildBotEnvironment({}, { proxy_enabled: true, proxy_host: 'localhost', proxy_port: 70000 }), /port/)
+
+assert.strictEqual(connectionMode({}), 'direct')
+assert.strictEqual(connectionMode({ proxy_enabled: true }), 'proxy')
+assert.strictEqual(connectionMode({ network_mode: 'wireguard', proxy_enabled: true }), 'wireguard')
+assert.throws(() => connectionMode({ network_mode: 'system-vpn' }), /network mode/i)
+assert.strictEqual(toWslPath('C:\\Users\\me\\vpn files\\surfshark.conf'), '/mnt/c/Users/me/vpn files/surfshark.conf')
+assert.throws(() => toWslPath('relative.conf'), /absolute Windows path/i)
+const vpnLaunch = buildVpnLaunch({
+  distro: 'Ubuntu', scriptPath: 'C:\\bot\\dashboard\\vpn-runner.sh',
+  configPath: 'C:\\bot\\polymarket_bot_config.json', dataDir: 'C:\\bot\\data',
+  root: 'C:\\bot', mode: 'dotnet', verbose: true, console: false,
+})
+assert.strictEqual(vpnLaunch.cmd, 'wsl.exe')
+assert.strictEqual(vpnLaunch.useShell, false)
+assert.deepStrictEqual(vpnLaunch.args, [
+  '-d', 'Ubuntu', '-u', 'root', '--', 'bash', '/mnt/c/bot/dashboard/vpn-runner.sh',
+  '--config', '/mnt/c/bot/polymarket_bot_config.json', '--data', '/mnt/c/bot/data',
+  '--root', '/mnt/c/bot', '--mode', 'dotnet', '--verbose',
+])
+assert(!vpnLaunch.args.join(' ').includes('private'))
+
 const chunk = parseProcessLogChunk('', '{"timestamp":"2026-07-31T20:00:00Z","level":"ERROR","message":"blocked"}\npartial', 'INFO', 'fallback')
 assert.deepStrictEqual(chunk.entries, [{ timestamp: '2026-07-31T20:00:00Z', level: 'ERROR', message: 'blocked' }])
 assert.strictEqual(chunk.remaining, 'partial')
@@ -85,4 +137,12 @@ assert.strictEqual(formatLogText([
 assert(fs.readFileSync(require.resolve('./renderer.js'), 'utf8').includes('api.copyText(text)'))
 assert(fs.readFileSync(require.resolve('./preload.js'), 'utf8').includes("copyText:"))
 assert(fs.readFileSync(require.resolve('./main.js'), 'utf8').includes("ipcMain.handle('copy-text'"))
+assert(fs.readFileSync(require.resolve('./renderer.js'), 'utf8').includes("key: 'network_mode'"))
+assert(fs.readFileSync(require.resolve('./renderer.js'), 'utf8').includes("key: 'vpn_config_path'"))
+assert(fs.readFileSync(require.resolve('./renderer.js'), 'utf8').includes("key: 'wireguard_private_key'"))
+assert(fs.readFileSync(require.resolve('./renderer.js'), 'utf8').includes("key: 'wireguard_public_key'"))
+assert(fs.readFileSync(require.resolve('./renderer.js'), 'utf8').includes("key: 'email_security'"))
+assert(fs.readFileSync(require.resolve('./renderer.js'), 'utf8').includes("['auto', 'Auto"))
+assert(fs.readFileSync(require.resolve('./preload.js'), 'utf8').includes('browseVpnConfig:'))
+assert(fs.readFileSync(require.resolve('./main.js'), 'utf8').includes("ipcMain.handle('browse-vpn-config'"))
 console.log('dashboard model self-checks passed')

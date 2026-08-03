@@ -4,11 +4,12 @@ const path = require('path')
 const fs = require('fs')
 const { spawn } = require('child_process')
 const { readLastLines } = require('./tail-lines')
-const { buildHistoryPoint, parseProcessLogChunk } = require('./dashboard-model')
+const { buildHistoryPoint, buildBotEnvironment, buildVpnLaunch, connectionMode, parseProcessLogChunk, toWslPath } = require('./dashboard-model')
 
 // ── State ─────────────────────────────────────────────────────────────────
 let mainWindow = null
 let botProcess = null
+let activeVpn = null
 let watchers = {}
 
 // ── Data directory ────────────────────────────────────────────────────────
@@ -267,8 +268,30 @@ function setupIPC() {
 
     const root = getBotRoot()
     let cmd, args, cwd, useShell = true
+    let botEnv
+    let network
+    const config = readJson(getConfigPath()) || {}
+    try {
+      botEnv = buildBotEnvironment({
+        ...process.env,
+        CONFIG_FILE: getConfigPath(),
+        DATA_DIR: dataDir,
+      }, config)
+      network = connectionMode(config)
+    } catch (e) {
+      return { error: e.message }
+    }
 
-    if (opts.mode === 'dotnet') {
+    if (network === 'wireguard' || network === 'openvpn') {
+      const launch = buildVpnLaunch({
+        distro: config.vpn_wsl_distro || 'Ubuntu',
+        scriptPath: path.join(__dirname, 'vpn-runner.sh'),
+        configPath: getConfigPath(), dataDir, root,
+        mode: opts.mode, verbose: opts.verbose, console: opts.console,
+      })
+      ;({ cmd, args, cwd, useShell } = launch)
+      activeVpn = { distro: config.vpn_wsl_distro || 'Ubuntu', scriptPath: path.join(__dirname, 'vpn-runner.sh') }
+    } else if (opts.mode === 'dotnet') {
       const projDir = path.join(root, 'dotnet', 'PolymarketBot')
       const extraArgs = []
       if (opts.verbose) extraArgs.push('--verbose')
@@ -314,11 +337,7 @@ function setupIPC() {
       botProcess = spawn(cmd, args, {
         cwd,
         shell: useShell,
-        env: {
-          ...process.env,
-          CONFIG_FILE: getConfigPath(),
-          DATA_DIR: dataDir,
-        },
+        env: botEnv,
       })
 
       const fwd = (level) => {
@@ -340,20 +359,21 @@ function setupIPC() {
         stdoutForwarder.flush()
         stderrForwarder.flush()
         botProcess = null
+        activeVpn = null
         if (mainWindow) mainWindow.webContents.send('bot-stopped', { code })
       })
 
       return { pid: botProcess.pid }
     } catch (e) {
       botProcess = null
+      activeVpn = null
       return { error: e.message }
     }
   })
 
-  ipcMain.handle('stop-bot', () => {
+  ipcMain.handle('stop-bot', async () => {
     if (!botProcess || botProcess.killed) return { error: 'Not running' }
-    botProcess.kill('SIGTERM')
-    setTimeout(() => { if (botProcess && !botProcess.killed) botProcess.kill('SIGKILL') }, 3000)
+    await stopBotProcess()
     return { ok: true }
   })
 
@@ -364,6 +384,18 @@ function setupIPC() {
   ipcMain.handle('copy-text', (_, text) => {
     clipboard.writeText(String(text ?? ''))
     return true
+  })
+
+  ipcMain.handle('browse-vpn-config', async () => {
+    const r = await dialog.showOpenDialog(mainWindow, {
+      properties: ['openFile'],
+      title: 'Select WireGuard or OpenVPN configuration',
+      filters: [
+        { name: 'VPN configurations', extensions: ['conf', 'ovpn'] },
+        { name: 'All files', extensions: ['*'] },
+      ],
+    })
+    return !r.canceled && r.filePaths.length ? r.filePaths[0] : null
   })
 
   // ── UI settings (persisted to file) ──────────────────────────────────
@@ -397,6 +429,27 @@ function setupIPC() {
   })
 }
 
+function stopBotProcess() {
+  if (!botProcess || botProcess.killed) return Promise.resolve()
+  if (!activeVpn) {
+    botProcess.kill('SIGTERM')
+    setTimeout(() => { if (botProcess && !botProcess.killed) botProcess.kill('SIGKILL') }, 3000)
+    return Promise.resolve()
+  }
+  const vpn = activeVpn
+  activeVpn = null
+  return new Promise(resolve => {
+    const stopper = spawn('wsl.exe', [
+      '-d', vpn.distro, '-u', 'root', '--', 'bash', toWslPath(vpn.scriptPath), '--stop',
+    ], { shell: false, stdio: 'ignore' })
+    const timer = setTimeout(() => { stopper.kill(); resolve() }, 10000)
+    stopper.on('error', () => { clearTimeout(timer); resolve() })
+    stopper.on('close', () => { clearTimeout(timer); resolve() })
+  }).finally(() => {
+    if (botProcess && !botProcess.killed) botProcess.kill('SIGTERM')
+  })
+}
+
 // ── App lifecycle ─────────────────────────────────────────────────────────
 app.whenReady().then(() => {
   dataDir = findDataDir()
@@ -408,7 +461,7 @@ app.whenReady().then(() => {
   })
 })
 
-app.on('window-all-closed', () => {
-  if (botProcess && !botProcess.killed) botProcess.kill()
+app.on('window-all-closed', async () => {
+  await stopBotProcess()
   if (process.platform !== 'darwin') app.quit()
 })

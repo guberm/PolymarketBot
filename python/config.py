@@ -178,6 +178,7 @@ class BotConfig:
     email_enabled: bool = False
     email_smtp_host: str = ""
     email_smtp_port: int = 587
+    email_security: str = "auto"
     email_use_tls: bool = True
     email_user: str = ""
     email_password: str = ""
@@ -299,6 +300,7 @@ class BotConfig:
             email_enabled=get("email_enabled", False),
             email_smtp_host=get("email_smtp_host", ""),
             email_smtp_port=get("email_smtp_port", 587),
+            email_security=get("email_security", "auto"),
             email_use_tls=get("email_use_tls", True),
             email_user=get("email_user", ""),
             email_password=get("email_password", ""),

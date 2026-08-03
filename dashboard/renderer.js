@@ -1170,6 +1170,21 @@ const CONFIG_SCHEMA = [
     { key: 'exchange_address',          label: 'Exchange Address',    ru: 'Адрес биржи',         type: 'text' },
     { key: 'neg_risk_exchange_address', label: 'Neg Risk Exchange',   ru: 'Neg Risk адрес',      type: 'text' },
   ]},
+  { section: 'NETWORK', ru: 'СЕТЬ', fields: [
+    { key: 'network_mode', label: 'Bot Network', ru: 'Сеть бота', type: 'select', default: 'direct', options: [['direct', 'Direct'], ['proxy', 'HTTP/HTTPS proxy'], ['wireguard', 'WireGuard (isolated)'], ['openvpn', 'OpenVPN (isolated)']] },
+    { key: 'vpn_config_path', label: 'VPN Config File', ru: 'Файл конфигурации VPN', type: 'file', networkModes: ['wireguard', 'openvpn'] },
+    { key: 'vpn_wsl_distro', label: 'WSL Distribution', ru: 'Дистрибутив WSL', type: 'text', default: 'Ubuntu', networkModes: ['wireguard', 'openvpn'] },
+    { key: 'wireguard_private_key', label: 'WireGuard Private Key', ru: 'Приватный ключ WireGuard', type: 'password', networkModes: ['wireguard'] },
+    { key: 'wireguard_public_key', label: 'WireGuard Public Key', ru: 'Публичный ключ WireGuard', type: 'text', networkModes: ['wireguard'] },
+    { key: 'openvpn_username', label: 'Surfshark Service Username', ru: 'Сервисный логин Surfshark', type: 'text', networkModes: ['openvpn'] },
+    { key: 'openvpn_password', label: 'Surfshark Service Password', ru: 'Сервисный пароль Surfshark', type: 'password', networkModes: ['openvpn'] },
+    { key: 'proxy_type', label: 'Proxy Type', ru: 'Тип прокси', type: 'select', options: [['http', 'HTTP'], ['https', 'HTTPS']], networkModes: ['proxy'] },
+    { key: 'proxy_host', label: 'Host / IP', ru: 'Хост / IP', type: 'text', networkModes: ['proxy'] },
+    { key: 'proxy_port', label: 'Port', ru: 'Порт', type: 'number', step: 1, networkModes: ['proxy'] },
+    { key: 'proxy_username', label: 'Username (optional)', ru: 'Логин (необязательно)', type: 'text', networkModes: ['proxy'] },
+    { key: 'proxy_password', label: 'Password (optional)', ru: 'Пароль (необязательно)', type: 'password', networkModes: ['proxy'] },
+    { key: 'proxy_bypass', label: 'Bypass hosts (optional)', ru: 'Хосты без прокси (необязательно)', type: 'text', networkModes: ['proxy'] },
+  ]},
   { section: 'SCANNING', ru: 'СКАНИРОВАНИЕ', fields: [
     { key: 'scan_interval_minutes',           label: 'Scan Interval (min)',       ru: 'Интервал сканирования (мин)', type: 'number', step: 1 },
     { key: 'min_liquidity',                   label: 'Min Liquidity ($)',          ru: 'Мин. ликвидность ($)',        type: 'number', step: 100 },
@@ -1232,8 +1247,8 @@ const CONFIG_SCHEMA = [
   { section: 'EMAIL', ru: 'ПОЧТА', fields: [
     { key: 'email_enabled',   label: 'Email Enabled',  ru: 'Email включён',  type: 'bool' },
     { key: 'email_smtp_host', label: 'SMTP Host',      ru: 'SMTP хост',      type: 'text' },
-    { key: 'email_smtp_port', label: 'SMTP Port',      ru: 'SMTP порт',      type: 'number', step: 1 },
-    { key: 'email_use_tls',   label: 'Use TLS',        ru: 'Использовать TLS', type: 'bool' },
+    { key: 'email_smtp_port', label: 'Preferred SMTP Port', ru: 'Предпочитаемый SMTP порт', type: 'number', step: 1 },
+    { key: 'email_security', label: 'SMTP Security', ru: 'Защита SMTP', type: 'select', default: 'auto', options: [['auto', 'Auto (remember working port)'], ['starttls', 'STARTTLS (port 587)'], ['ssl', 'SSL / implicit TLS (port 465)']] },
     { key: 'email_user',      label: 'Email User',     ru: 'Email адрес',    type: 'text' },
     { key: 'email_password',  label: 'Email Password', ru: 'Email пароль',   type: 'password' },
     { key: 'email_to',        label: 'Email To',       ru: 'Получатель',     type: 'text' },
@@ -1272,6 +1287,12 @@ function updateProviderVisibility(form, provider) {
   })
 }
 
+function updateNetworkVisibility(form, mode) {
+  form.querySelectorAll('[data-network-modes]').forEach(el => {
+    el.style.display = el.dataset.networkModes.split(',').includes(mode) ? '' : 'none'
+  })
+}
+
 async function openConfig() {
   currentConfig = await api.readConfig()
   const form = $('config-form')
@@ -1283,7 +1304,7 @@ async function openConfig() {
     const grid = document.createElement('div'); grid.className = 'config-grid'
 
     for (const f of s.fields) {
-      const val = currentConfig[f.key]
+      const val = currentConfig[f.key] ?? f.default
       const group = document.createElement('div'); group.className = 'form-group'
       const flabel = currentLang === 'ru' && f.ru ? f.ru : f.label
       const inputId = `cfg-${f.key}`
@@ -1292,6 +1313,7 @@ async function openConfig() {
       if (f.providers) {
         group.dataset.providers = f.providers.join(',')
       }
+      if (f.networkModes) group.dataset.networkModes = f.networkModes.join(',')
 
       if (f.type === 'provider-select') {
         group.innerHTML = `<label class="form-label" for="${inputId}">${flabel}</label>
@@ -1302,6 +1324,29 @@ async function openConfig() {
           }</select>`
         const sel = group.querySelector('select')
         sel.addEventListener('change', () => updateProviderVisibility(form, sel.value))
+
+      } else if (f.type === 'select') {
+        group.innerHTML = `<label class="form-label" for="${inputId}">${flabel}</label>
+          <select id="${inputId}" class="form-input" data-key="${f.key}">${f.options.map(([value, label]) =>
+            `<option value="${escHtml(value)}" ${(val || f.options[0][0]) === value ? 'selected' : ''}>${escHtml(label)}</option>`
+          ).join('')}</select>`
+        if (f.key === 'network_mode') group.querySelector('select').addEventListener('change', e => updateNetworkVisibility(form, e.target.value))
+        if (f.key === 'email_security') group.querySelector('select').addEventListener('change', e => {
+          const port = form.querySelector('[data-key="email_smtp_port"]')
+          if (e.target.value === 'starttls') port.value = 587
+          if (e.target.value === 'ssl') port.value = 465
+        })
+
+      } else if (f.type === 'file') {
+        group.innerHTML = `<label class="form-label" for="${inputId}">${flabel}</label>
+          <div style="display:flex;gap:6px;align-items:center">
+            <input class="form-input" type="text" id="${inputId}" data-key="${f.key}" value="${escHtml(String(val ?? ''))}" autocomplete="off" style="flex:1;min-width:0">
+            <button type="button" class="btn btn-secondary btn-sm vpn-file-btn">${currentLang === 'ru' ? 'Выбрать' : 'Browse'}</button>
+          </div>`
+        group.querySelector('.vpn-file-btn').addEventListener('click', async () => {
+          const selected = await api.browseVpnConfig()
+          if (selected) group.querySelector('input').value = selected
+        })
 
       } else if (f.type === 'model-select') {
         const currentModel = val || currentConfig.claude_model || ''
@@ -1380,6 +1425,7 @@ async function openConfig() {
   // Apply initial provider visibility
   const initialProvider = currentConfig.ai_provider || 'anthropic'
   updateProviderVisibility(form, initialProvider)
+  updateNetworkVisibility(form, currentConfig.network_mode || (currentConfig.proxy_enabled ? 'proxy' : 'direct'))
 
   openModal('config-modal', document.activeElement)
 }
@@ -1405,6 +1451,13 @@ async function saveConfig() {
     invalid.focus()
     $('ui-status').textContent = currentLang === 'ru' ? 'Исправьте некорректное числовое значение' : 'Fix the invalid numeric value'
     return
+  }
+  if (newConfig.email_security === 'starttls') {
+    newConfig.email_smtp_port = 587
+    newConfig.email_use_tls = true
+  } else if (newConfig.email_security === 'ssl') {
+    newConfig.email_smtp_port = 465
+    newConfig.email_use_tls = false
   }
   await api.writeConfig(newConfig)
   currentConfig = newConfig

@@ -139,6 +139,7 @@ public sealed class BotConfig
     public bool EmailEnabled { get; init; }
     public string EmailSmtpHost { get; init; } = "";
     public int EmailSmtpPort { get; init; } = 587;
+    public string EmailSecurity { get; init; } = "auto";
     public bool EmailUseTls { get; init; } = true;
     public string EmailUser { get; init; } = "";
     public string EmailPassword { get; init; } = "";
@@ -262,6 +263,7 @@ public sealed class BotConfig
             EmailEnabled = Cfg("email_enabled", "EMAIL_ENABLED", "false").Equals("true", StringComparison.OrdinalIgnoreCase),
             EmailSmtpHost = Cfg("email_smtp_host", "EMAIL_SMTP_HOST", ""),
             EmailSmtpPort = int.Parse(Cfg("email_smtp_port", "EMAIL_SMTP_PORT", "587")),
+            EmailSecurity = Cfg("email_security", "EMAIL_SECURITY", "auto"),
             EmailUseTls = Cfg("email_use_tls", "EMAIL_USE_TLS", "true").Equals("true", StringComparison.OrdinalIgnoreCase),
             EmailUser = Cfg("email_user", "EMAIL_USER", ""),
             EmailPassword = Cfg("email_password", "EMAIL_PASSWORD", ""),

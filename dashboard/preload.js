@@ -18,6 +18,7 @@ contextBridge.exposeInMainWorld('api', {
   // Config
   readConfig:    ()      => ipcRenderer.invoke('read-config'),
   writeConfig:   (cfg)   => ipcRenderer.invoke('write-config', cfg),
+  browseVpnConfig: ()    => ipcRenderer.invoke('browse-vpn-config'),
 
   // Bot process
   botStatus:     ()      => ipcRenderer.invoke('bot-status'),

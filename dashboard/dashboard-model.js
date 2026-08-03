@@ -14,6 +14,64 @@ function configuredProviders(config = {}) {
   })
 }
 
+function connectionMode(config = {}) {
+  const mode = String(config.network_mode || (config.proxy_enabled ? 'proxy' : 'direct')).toLowerCase()
+  if (!['direct', 'proxy', 'wireguard', 'openvpn'].includes(mode)) throw new Error(`Unsupported network mode: ${mode}`)
+  return mode
+}
+
+function toWslPath(value) {
+  const match = String(value || '').match(/^([a-z]):[\\/](.*)$/i)
+  if (!match) throw new Error('VPN launch requires an absolute Windows path')
+  return `/mnt/${match[1].toLowerCase()}/${match[2].replace(/\\/g, '/')}`
+}
+
+function buildVpnLaunch({ distro = 'Ubuntu', scriptPath, configPath, dataDir, root, mode, verbose, console }) {
+  const args = [
+    '-d', String(distro || 'Ubuntu'), '-u', 'root', '--', 'bash', toWslPath(scriptPath),
+    '--config', toWslPath(configPath), '--data', toWslPath(dataDir), '--root', toWslPath(root),
+    '--mode', mode === 'dotnet' ? 'dotnet' : 'python',
+  ]
+  if (verbose) args.push('--verbose')
+  if (console) args.push('--console')
+  return { cmd: 'wsl.exe', args, cwd: root, useShell: false }
+}
+
+function buildBotEnvironment(baseEnv = {}, config = {}) {
+  const env = { ...baseEnv }
+  if (connectionMode(config) !== 'proxy') return env
+
+  let proxy
+  try {
+    if (String(config.proxy_host || '').trim()) {
+      const protocol = String(config.proxy_type || 'http').toLowerCase().replace(/:$/, '')
+      if (!['http', 'https'].includes(protocol)) throw new Error('protocol')
+      const host = String(config.proxy_host).trim()
+      const port = String(config.proxy_port ?? '').trim()
+      if (port && (!/^\d+$/.test(port) || Number(port) < 1 || Number(port) > 65535))
+        throw new Error('port')
+      proxy = new URL(`${protocol}://${host.includes(':') && !host.startsWith('[') ? `[${host}]` : host}`)
+      if (port) proxy.port = port
+      proxy.username = String(config.proxy_username || '')
+      proxy.password = String(config.proxy_password || '')
+    } else {
+      proxy = new URL(String(config.proxy_url || ''))
+    }
+  }
+  catch (e) {
+    if (e.message === 'port') throw new Error('Proxy port must be between 1 and 65535')
+    if (e.message === 'protocol') throw new Error('Proxy URL must use HTTP or HTTPS')
+    throw new Error('Proxy URL is required and must be valid')
+  }
+  if (!['http:', 'https:'].includes(proxy.protocol))
+    throw new Error('Proxy URL must use HTTP or HTTPS')
+
+  for (const key of ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy']) env[key] = proxy.toString()
+  if (String(config.proxy_bypass || '').trim())
+    env.NO_PROXY = env.no_proxy = String(config.proxy_bypass).trim()
+  return env
+}
+
 function buildAttention({ portfolio, pendingOrders = [], logs = [], config = {}, now = Date.now() }) {
   const items = []
   if (portfolio?.is_halted)
@@ -203,6 +261,6 @@ function formatLogText(entries = []) {
     .join('\n')
 }
 
-const dashboardModel = { buildAttention, buildProviderHealth, buildHistoryPoint, buildHistorySeries, clampPaneSize, parseProcessLogChunk, dedupeLogs, formatLogText }
+const dashboardModel = { buildAttention, buildProviderHealth, buildHistoryPoint, buildHistorySeries, buildBotEnvironment, buildVpnLaunch, clampPaneSize, connectionMode, parseProcessLogChunk, dedupeLogs, formatLogText, toWslPath }
 if (typeof module !== 'undefined') module.exports = dashboardModel
 if (typeof window !== 'undefined') window.DashboardModel = dashboardModel
