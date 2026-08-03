@@ -39,7 +39,7 @@ Only one process may own a data directory at a time. `bot.lock` prevents Python 
 ### 1. Create your config file
 
 ```bash
-git clone https://github.com/guberm/polymarket-bot.git
+git clone https://github.com/guberm/PolymarketBot.git
 cd polymarket-bot
 cp polymarket_bot_config.json.example polymarket_bot_config.json
 # Edit polymarket_bot_config.json — fill in your provider API key
@@ -98,6 +98,75 @@ cd dashboard
 npm install
 npm start
 ```
+
+## Bot-only VPN and proxy (Windows)
+
+The Dashboard can route **only the launched bot** through a VPN or HTTP/HTTPS proxy. It does not change the Windows system connection, browser traffic, or other applications. `direct` remains the default.
+
+| Mode | What you provide | Isolation |
+|------|------------------|-----------|
+| `direct` | Nothing | Uses the normal Windows connection |
+| `proxy` | HTTP/HTTPS host, port, and optional credentials | Proxy variables are passed only to the bot process |
+| `wireguard` | `.conf` file and, when needed, matching private/public keys | Runs inside a dedicated WSL network namespace |
+| `openvpn` | `.ovpn` file and Surfshark service username/password | Runs inside a dedicated WSL network namespace |
+
+### Configure through the Dashboard
+
+1. Open **⚙ Config → NETWORK**.
+2. Choose **Bot Network**: Direct, HTTP/HTTPS proxy, WireGuard, or OpenVPN.
+3. For a VPN, select the local `.conf`/`.ovpn` file through **VPN Config File**.
+4. Enter the WireGuard keys or OpenVPN service credentials when required.
+5. Save the config and start the bot from the Dashboard.
+
+WireGuard example:
+
+```json
+{
+  "network_mode": "wireguard",
+  "vpn_config_path": "C:\\VPN\\il-tlv.conf",
+  "vpn_wsl_distro": "Ubuntu",
+  "wireguard_private_key": "<private key>",
+  "wireguard_public_key": "<matching public key>"
+}
+```
+
+OpenVPN example:
+
+```json
+{
+  "network_mode": "openvpn",
+  "vpn_config_path": "C:\\VPN\\il-tlv.prod.surfshark.com_udp.ovpn",
+  "vpn_wsl_distro": "Ubuntu",
+  "openvpn_username": "<Surfshark service username>",
+  "openvpn_password": "<Surfshark service password>"
+}
+```
+
+Proxy example:
+
+```json
+{
+  "network_mode": "proxy",
+  "proxy_type": "http",
+  "proxy_host": "proxy.example.com",
+  "proxy_port": 8080,
+  "proxy_username": "",
+  "proxy_password": "",
+  "proxy_bypass": "localhost,127.0.0.1"
+}
+```
+
+### VPN runtime and safety
+
+- Requires Windows, WSL2, and the configured Linux distribution (default: `Ubuntu`).
+- On first start, missing Ubuntu networking packages are installed automatically.
+- The runner creates a dedicated network namespace and starts only the selected Python or .NET bot inside it.
+- A kill switch blocks direct bot traffic; only the VPN endpoint is reachable outside the tunnel.
+- WireGuard tries resolved endpoint IPs until one completes a handshake, then verifies the external VPN IP.
+- If the tunnel has no Internet access, startup fails closed and the bot is not started.
+- Stopping the bot removes the namespace, temporary credentials, routes, and firewall rules.
+
+VPN/proxy modes are applied by the Dashboard launcher. Direct `python main.py`, `dotnet run`, and `run-bot.bat` commands use the current machine network.
 
 ## AI Providers
 
@@ -167,6 +236,7 @@ An Electron desktop app that visualises the bot's state in real time.
 - Exit reason breakdown (stop-loss, take-profit, edge-gone, ghost, resolved)
 - Live log — current session only, clears between restarts
 - Config editor — per-provider sections (ANTHROPIC, OPENAI, GEMINI, OPENROUTER, AZURE OPENAI) with live model loading (↺ Load button fetches available models from each provider's API)
+- Per-bot network selection — Direct, HTTP/HTTPS proxy, isolated WireGuard, or isolated OpenVPN
 - Start / Stop bot, mode/flag preferences persist
 - Light/dark theme + English/Russian UI toggle
 
@@ -242,7 +312,23 @@ Available: `--max-position-pct`, `--max-total-exposure-pct`, `--max-category-exp
 
 ## Configuration
 
-All settings live in **`polymarket_bot_config.json`**. See `polymarket_bot_config.json.example` for a fully annotated template. Config priority: **CLI arg → env var → config file → code default**. All keys can also be set as uppercase env vars.
+All settings live in **`polymarket_bot_config.json`**. See `polymarket_bot_config.json.example` for a fully annotated template. Runtime bot config priority: **CLI arg → env var → config file → code default**. Runtime keys can also be set as uppercase env vars; Dashboard-only network settings are read from the JSON file.
+
+### Network (Dashboard launcher)
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `network_mode` | `direct` | `direct`, `proxy`, `wireguard`, or `openvpn` |
+| `vpn_config_path` | — | Absolute Windows path to a `.conf` or `.ovpn` file |
+| `vpn_wsl_distro` | `Ubuntu` | WSL distribution used for the isolated namespace |
+| `wireguard_private_key` | — | Optional replacement for the config's `PrivateKey`; stored only in the gitignored local config |
+| `wireguard_public_key` | — | Optional matching local public key used to validate the private key |
+| `openvpn_username` | — | VPN provider service username |
+| `openvpn_password` | — | VPN provider service password |
+| `proxy_type` | `http` | `http` or `https` |
+| `proxy_host` / `proxy_port` | — | Proxy endpoint |
+| `proxy_username` / `proxy_password` | — | Optional proxy authentication |
+| `proxy_bypass` | — | Comma-separated `NO_PROXY` hosts |
 
 ### AI Provider
 
@@ -343,15 +429,18 @@ Azure also requires: `azure_openai_api_version` (default `2024-02-01`).
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `email_enabled` | `false` | Send HTML emails |
+| `email_enabled` | `false` | Send plain-text email notifications |
 | `email_smtp_host` | — | e.g. `smtp.gmail.com` |
-| `email_smtp_port` | `587` | SMTP port; blocked `587` automatically falls back to implicit TLS on `465` |
-| `email_use_tls` | `true` | STARTTLS; `false` = SSL on port 465 |
+| `email_smtp_port` | `587` | Preferred port used by `auto` mode |
+| `email_security` | `auto` | `auto` tries the preferred mode and falls back between STARTTLS 587 and implicit TLS 465; `starttls` or `ssl` forces one mode |
+| `email_use_tls` | `true` | Legacy preference used by `auto`; `false` prefers implicit TLS on 465 |
 | `email_user` | — | Sender address |
 | `email_password` | — | App password for Gmail |
 | `email_to` | — | Recipient address |
 
 Events: bot started, trade opened/closed, ghost removed, market resolved, halted, error, stopped.
+
+The successful SMTP port is reused for the rest of the bot session. Plain-text MIME is intentional: some VPN routes accept authentication but time out while submitting multipart/HTML messages.
 
 ## How Estimation Works
 
@@ -458,7 +547,7 @@ python/                            ← Python implementation
   market_scanner.py                  Gamma API + fresh CLOB books
   portfolio.py                       Kelly sizing, risk, cooldown, ghost removal
   trader.py                          PaperTrader + LiveTrader + ghost detection
-  notifier.py                        HTML email notifications (8 event types)
+  notifier.py                        VPN-compatible plain-text email notifications
   persistence.py                     Atomic portfolio + JSONL trades/estimates
   models.py                          Domain dataclasses
   logger_setup.py                    Colored console + JSON file logging
@@ -477,7 +566,7 @@ dotnet/PolymarketBot/              ← .NET 8 implementation (mirrors Python)
     LiveTrader.cs                    CLOB GTC orders + ghost detection
     PaperTrader.cs                   Simulated execution
     ClobApiClient.cs                 EIP-712 + HMAC auth, orders, auto-claim
-    Notifier.cs                      HTML email notifications
+    Notifier.cs                      VPN-compatible plain-text email notifications
     PersistenceService.cs            Atomic JSON + JSONL
     JsonFileLoggerProvider.cs        JSON line logger
 
@@ -487,6 +576,8 @@ resolution-watchlist.json          ← Runtime calibration outcomes queue
 
 dashboard/                         ← Electron desktop app
   main.js                            IPC, file watchers, bot spawn, model fetching API
+  vpn-runner.sh                      Isolated WSL WireGuard/OpenVPN runner and kill switch
+  test-vpn-runner.js                 VPN runner integration self-check
   preload.js                         Context bridge
   renderer.js                        UI + per-provider config sections
   index.html / styles.css            Shell + dark/light themes
