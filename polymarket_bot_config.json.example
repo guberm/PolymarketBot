@@ -13,6 +13,22 @@
   "gamma_api_host": "https://gamma-api.polymarket.com",
   "clob_host": "https://clob.polymarket.com",
 
+  "____SECTION_NETWORK____": "── Network used only by this bot; VPN modes run isolated in WSL ─────",
+
+  "network_mode": "direct",
+  "vpn_config_path": "C:\\Users\\you\\vpn\\location.conf",
+  "vpn_wsl_distro": "Ubuntu",
+  "wireguard_private_key": "",
+  "wireguard_public_key": "",
+  "openvpn_username": "",
+  "openvpn_password": "",
+  "proxy_type": "http",
+  "proxy_host": "proxy-host.example.com",
+  "proxy_port": 8080,
+  "proxy_username": "",
+  "proxy_password": "",
+  "proxy_bypass": "localhost,127.0.0.1",
+
   "____SECTION_MODE____": "── Trading mode ──────────────────────────────────────────────────────",
 
   "live_trading": false,
@@ -136,6 +152,7 @@
   "email_enabled": false,
   "email_smtp_host": "smtp.gmail.com",
   "email_smtp_port": 587,
+  "email_security": "auto",
   "email_use_tls": true,
   "email_user": "yourbot@gmail.com",
   "email_password": "xxxx-xxxx-xxxx-xxxx",

@@ -21,13 +21,38 @@ Near(0.50, buy.WorstPrice);
 
 var smtpPlanMethod = typeof(Notifier).GetMethod("ConnectionAttempts", BindingFlags.NonPublic | BindingFlags.Static)
     ?? throw new Exception("SMTP fallback connection plan is missing");
-var smtpPlan = (Array)(smtpPlanMethod.Invoke(null, [587, true])
+var smtpPlan = (Array)(smtpPlanMethod.Invoke(null, ["auto", 587, true, null])
     ?? throw new Exception("SMTP fallback connection plan returned null"));
 if (smtpPlan.Length != 2) throw new Exception("SMTP 587 plan should include one fallback");
 var smtpFallback = smtpPlan.GetValue(1)!;
 if ((int)smtpFallback.GetType().GetField("Item1")!.GetValue(smtpFallback)! != 465 ||
     !(bool)smtpFallback.GetType().GetField("Item2")!.GetValue(smtpFallback)!)
     throw new Exception("SMTP fallback should use port 465 with implicit TLS");
+var cachedSmtpPlan = (Array)smtpPlanMethod.Invoke(null, ["auto", 587, true, 465])!;
+var cachedSmtpFirst = cachedSmtpPlan.GetValue(0)!;
+if ((int)cachedSmtpFirst.GetType().GetField("Item1")!.GetValue(cachedSmtpFirst)! != 465)
+    throw new Exception("SMTP auto mode should reuse the successful port first for the rest of the session");
+var forcedSslPlan = (Array)smtpPlanMethod.Invoke(null, ["ssl", 587, true, null])!;
+if (forcedSslPlan.Length != 1 ||
+    (int)forcedSslPlan.GetValue(0)!.GetType().GetField("Item1")!.GetValue(forcedSslPlan.GetValue(0)!)! != 465)
+    throw new Exception("Explicit SMTP SSL mode should only use port 465");
+var smtpTimeout = typeof(Notifier).GetField("SmtpTimeoutMs", BindingFlags.NonPublic | BindingFlags.Static)
+    ?? throw new Exception("SMTP timeout constant is missing");
+if ((int)smtpTimeout.GetRawConstantValue()! != 15000)
+    throw new Exception("SMTP timeout should be 15 seconds");
+var smtpCapabilitiesMethod = typeof(Notifier).GetMethod("CapabilitiesForSend", BindingFlags.NonPublic | BindingFlags.Static)
+    ?? throw new Exception("SMTP send capability filter is missing");
+var smtpCapabilities = MailKit.Net.Smtp.SmtpCapabilities.Chunking | MailKit.Net.Smtp.SmtpCapabilities.Pipelining;
+var filteredCapabilities = (MailKit.Net.Smtp.SmtpCapabilities)smtpCapabilitiesMethod.Invoke(null, [smtpCapabilities])!;
+if (filteredCapabilities.HasFlag(MailKit.Net.Smtp.SmtpCapabilities.Chunking) ||
+    !filteredCapabilities.HasFlag(MailKit.Net.Smtp.SmtpCapabilities.Pipelining))
+    throw new Exception("SMTP should disable CHUNKING while preserving other server capabilities");
+var createSmtpMessageMethod = typeof(Notifier).GetMethod("CreateMessage", BindingFlags.NonPublic | BindingFlags.Static)
+    ?? throw new Exception("SMTP message compatibility builder is missing");
+var smtpMessage = (MimeKit.MimeMessage)createSmtpMessageMethod.Invoke(null,
+    ["from@example.com", "to@example.com", "Subject", "<b>Hello</b>"])!;
+if (smtpMessage.Body is not MimeKit.TextPart { IsPlain: true } smtpText || smtpText.Text != "Hello")
+    throw new Exception("SMTP messages should use a plain-text body for VPN compatibility");
 
 var thin = ExecutionPricing.CalculateBuy([new BookLevel(0.40, 10)], 10.0);
 if (thin.Complete) throw new Exception("Expected insufficient BUY depth");

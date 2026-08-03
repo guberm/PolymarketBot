@@ -31,24 +31,48 @@ from trader import LiveTrader
 class ReliabilityTests(unittest.TestCase):
     @patch("notifier.smtplib.SMTP_SSL")
     @patch("notifier.smtplib.SMTP")
-    def test_email_uses_implicit_tls_fallback_after_starttls_timeout(self, primary, fallback):
+    def test_email_auto_reuses_implicit_tls_after_starttls_timeout(self, primary, fallback):
         config = BotConfig(
             email_enabled=True, email_smtp_host="smtp.gmail.com", email_smtp_port=587,
-            email_use_tls=True, email_user="bot@example.com", email_password="secret",
+            email_security="auto", email_use_tls=True,
+            email_user="bot@example.com", email_password="secret",
             email_to="owner@example.com",
         )
         starttls = primary.return_value
         starttls.starttls.side_effect = TimeoutError("blocked")
         secure = fallback.return_value
 
+        notifier = Notifier(config)
+        notifier.send("test", "<b>test</b>")
+        notifier.send("test again", "<b>test</b>")
+
+        self.assertEqual(primary.call_count, 1)
+        self.assertEqual(fallback.call_count, 2)
+        fallback.assert_called_with(
+            "smtp.gmail.com", 465, timeout=15, context=unittest.mock.ANY,
+        )
+        self.assertEqual(secure.login.call_count, 2)
+        self.assertEqual(secure.sendmail.call_count, 2)
+        sent_message = secure.sendmail.call_args.args[2]
+        self.assertIn("Content-Type: text/plain", sent_message)
+        self.assertNotIn("multipart/alternative", sent_message)
+        self.assertNotIn("text/html", sent_message)
+        starttls.close.assert_called_once()
+
+    @patch("notifier.smtplib.SMTP_SSL")
+    @patch("notifier.smtplib.SMTP")
+    def test_email_explicit_ssl_only_uses_port_465(self, starttls, secure):
+        config = BotConfig(
+            email_enabled=True, email_smtp_host="smtp.gmail.com", email_smtp_port=587,
+            email_security="ssl", email_to="owner@example.com",
+        )
+
         Notifier(config).send("test", "<b>test</b>")
 
-        fallback.assert_called_once_with(
-            "smtp.gmail.com", 465, timeout=5, context=unittest.mock.ANY,
+        starttls.assert_not_called()
+        secure.assert_called_once_with(
+            "smtp.gmail.com", 465, timeout=15, context=unittest.mock.ANY,
         )
-        secure.login.assert_called_once_with("bot@example.com", "secret")
-        secure.sendmail.assert_called_once()
-        starttls.close.assert_called_once()
 
     @patch("notifier.smtplib.SMTP_SSL")
     @patch("notifier.smtplib.SMTP")

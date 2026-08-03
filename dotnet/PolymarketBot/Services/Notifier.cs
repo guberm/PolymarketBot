@@ -9,15 +9,17 @@ using SmtpClient = MailKit.Net.Smtp.SmtpClient;
 namespace PolymarketBot.Services;
 
 /// <summary>
-/// Sends HTML email notifications for bot state changes.
+/// Sends email notifications for bot state changes.
 /// All methods silently swallow errors — a notification failure must never crash the bot.
 /// Configure via env vars: EMAIL_ENABLED, EMAIL_SMTP_HOST, EMAIL_SMTP_PORT,
-/// EMAIL_USE_TLS, EMAIL_USER, EMAIL_PASSWORD, EMAIL_TO.
+/// EMAIL_SECURITY, EMAIL_USE_TLS, EMAIL_USER, EMAIL_PASSWORD, EMAIL_TO.
 /// </summary>
 public sealed class Notifier
 {
     private readonly BotConfig _config;
     private readonly ILogger<Notifier> _logger;
+    private (int Port, bool ImplicitTls)? _smtpSessionAttempt;
+    private const int SmtpTimeoutMs = 15000;
 
     // Header colors by event type
     private const string ColStarted      = "#1e3a5f";
@@ -52,35 +54,33 @@ public sealed class Notifier
     public void Send(string subject, string htmlBody)
     {
         if (!Enabled) return;
+        var stage = "message";
         try
         {
             var from = string.IsNullOrEmpty(_config.EmailUser)
                 ? $"polymarket-bot@{_config.EmailSmtpHost}"
                 : _config.EmailUser;
-            var plainBody = HtmlToPlain(htmlBody);
-            var message = new MimeMessage
-            {
-                Subject = $"[Polymarket Bot] {subject}",
-                Body = new BodyBuilder { TextBody = plainBody, HtmlBody = htmlBody }.ToMessageBody(),
-            };
-            message.From.Add(MailboxAddress.Parse(from));
-            message.To.Add(MailboxAddress.Parse(_config.EmailTo));
+            var message = CreateMessage(from, _config.EmailTo, subject, htmlBody);
 
             SmtpClient? connected = null;
+            (int Port, bool ImplicitTls)? connectedAttempt = null;
             Exception? lastConnectionError = null;
-            var attempts = ConnectionAttempts(_config.EmailSmtpPort, _config.EmailUseTls);
+            var attempts = ConnectionAttempts(_config.EmailSecurity, _config.EmailSmtpPort,
+                _config.EmailUseTls, _smtpSessionAttempt?.Port);
             for (var i = 0; i < attempts.Length; i++)
             {
                 var attempt = attempts[i];
-                var candidate = new SmtpClient { Timeout = 5000 };
+                var candidate = new SmtpClient { Timeout = SmtpTimeoutMs };
                 try
                 {
+                    stage = $"connect:{attempt.Port}";
                     candidate.Connect(_config.EmailSmtpHost, attempt.Port,
                         attempt.ImplicitTls ? SecureSocketOptions.SslOnConnect : SecureSocketOptions.StartTls);
                     connected = candidate;
+                    connectedAttempt = attempt;
                     if (i > 0)
-                        _logger.LogWarning("SMTP {PrimaryPort} unavailable ({Error}); using implicit TLS on {FallbackPort}",
-                            _config.EmailSmtpPort, lastConnectionError?.GetBaseException().Message, attempt.Port);
+                        _logger.LogWarning("SMTP connection unavailable ({Error}); using port {Port}",
+                            lastConnectionError?.GetBaseException().Message, attempt.Port);
                     break;
                 }
                 catch (Exception ex)
@@ -93,19 +93,49 @@ public sealed class Notifier
 
             using var client = connected;
             if (!string.IsNullOrEmpty(_config.EmailUser))
+            {
+                stage = "authenticate";
                 client.Authenticate(_config.EmailUser, _config.EmailPassword);
+            }
+            client.Capabilities = CapabilitiesForSend(client.Capabilities);
+            stage = "send";
             client.Send(message);
+            if (_config.EmailSecurity.Equals("auto", StringComparison.OrdinalIgnoreCase))
+                _smtpSessionAttempt = connectedAttempt;
+            stage = "disconnect";
             client.Disconnect(true);
             _logger.LogDebug("Email sent: {Subject}", subject);
         }
         catch (Exception ex)
         {
-            _logger.LogWarning("Email notification failed: {Error}", ex.GetBaseException().Message);
+            _logger.LogWarning("Email notification failed during {Stage}: {Error}", stage, ex.GetBaseException().Message);
         }
     }
 
-    private static (int Port, bool ImplicitTls)[] ConnectionAttempts(int port, bool useTls) =>
-        useTls && port == 587 ? [(587, false), (465, true)] : [(port, !useTls)];
+    private static (int Port, bool ImplicitTls)[] ConnectionAttempts(
+        string security, int port, bool useTls, int? sessionPort)
+    {
+        if (security.Equals("starttls", StringComparison.OrdinalIgnoreCase)) return [(587, false)];
+        if (security.Equals("ssl", StringComparison.OrdinalIgnoreCase)) return [(465, true)];
+        var preferred = sessionPort ?? (port == 465 || !useTls ? 465 : 587);
+        return preferred == 465 ? [(465, true), (587, false)] : [(587, false), (465, true)];
+    }
+
+    private static MailKit.Net.Smtp.SmtpCapabilities CapabilitiesForSend(
+        MailKit.Net.Smtp.SmtpCapabilities capabilities) =>
+        capabilities & ~MailKit.Net.Smtp.SmtpCapabilities.Chunking;
+
+    private static MimeMessage CreateMessage(string from, string to, string subject, string htmlBody)
+    {
+        var message = new MimeMessage
+        {
+            Subject = $"[Polymarket Bot] {subject}",
+            Body = new TextPart("plain") { Text = HtmlToPlain(htmlBody) },
+        };
+        message.From.Add(MailboxAddress.Parse(from));
+        message.To.Add(MailboxAddress.Parse(to));
+        return message;
+    }
 
     // ── Convenience helpers ──────────────────────────────────────────────
 

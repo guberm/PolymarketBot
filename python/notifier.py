@@ -4,7 +4,8 @@ Configure via env vars:
     EMAIL_ENABLED=true
     EMAIL_SMTP_HOST=smtp.gmail.com
     EMAIL_SMTP_PORT=587
-    EMAIL_USE_TLS=true         (STARTTLS; set false for SMTP_SSL on port 465)
+    EMAIL_SECURITY=auto        (auto, starttls, or ssl)
+    EMAIL_USE_TLS=true         (legacy preference used by auto mode)
     EMAIL_USER=mybot@gmail.com
     EMAIL_PASSWORD=app_password
     EMAIL_TO=me@example.com
@@ -15,10 +16,10 @@ import re
 import smtplib
 import ssl
 from datetime import datetime
-from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
 log = logging.getLogger("bot.notifier")
+SMTP_TIMEOUT = 15
 
 # ── Header colors by event type ──────────────────────────────────────────────
 _COLORS = {
@@ -125,7 +126,7 @@ def _html_to_plain(html: str) -> str:
 
 
 class Notifier:
-    """Sends HTML email notifications for bot state changes.
+    """Sends email notifications for bot state changes.
 
     All send methods silently swallow errors — a notification failure must
     never crash the bot.
@@ -133,6 +134,7 @@ class Notifier:
 
     def __init__(self, config):
         self._config = config
+        self._smtp_session_port = None
 
     @property
     def enabled(self) -> bool:
@@ -143,42 +145,58 @@ class Notifier:
         )
 
     def send(self, subject: str, html_body: str) -> None:
-        """Send an HTML email with plain-text fallback. No-op if disabled."""
+        """Send a VPN-compatible plain-text email. No-op if disabled."""
         if not self.enabled:
             return
         cfg = self._config
         try:
-            msg = MIMEMultipart("alternative")
+            msg = MIMEText(_html_to_plain(html_body), "plain")
             msg["Subject"] = f"[Polymarket Bot] {subject}"
             msg["From"] = cfg.email_user or f"polymarket-bot@{cfg.email_smtp_host}"
             msg["To"] = cfg.email_to
-            msg.attach(MIMEText(_html_to_plain(html_body), "plain"))
-            msg.attach(MIMEText(html_body, "html"))
 
             context = ssl.create_default_context()
-            if cfg.email_use_tls:
-                smtp = None
-                try:
-                    smtp = smtplib.SMTP(cfg.email_smtp_host, cfg.email_smtp_port, timeout=5)
-                    smtp.ehlo()
-                    smtp.starttls(context=context)
-                    smtp.ehlo()
-                except (OSError, smtplib.SMTPException) as primary_error:
-                    if cfg.email_smtp_port != 587:
-                        raise
-                    if smtp is not None:
-                        smtp.close()
-                    log.warning(f"SMTP 587 unavailable ({primary_error}); retrying with implicit TLS on 465")
-                    smtp = smtplib.SMTP_SSL(cfg.email_smtp_host, 465, timeout=5, context=context)
-                with smtp:
-                    if cfg.email_user and cfg.email_password:
-                        smtp.login(cfg.email_user, cfg.email_password)
-                    smtp.sendmail(msg["From"], [cfg.email_to], msg.as_string())
+            security = getattr(cfg, "email_security", "auto").lower()
+            if security == "starttls":
+                attempts = [(587, False)]
+            elif security == "ssl":
+                attempts = [(465, True)]
             else:
-                with smtplib.SMTP_SSL(cfg.email_smtp_host, cfg.email_smtp_port, timeout=5, context=context) as smtp:
-                    if cfg.email_user and cfg.email_password:
-                        smtp.login(cfg.email_user, cfg.email_password)
-                    smtp.sendmail(msg["From"], [cfg.email_to], msg.as_string())
+                preferred = self._smtp_session_port or (
+                    465 if cfg.email_smtp_port == 465 or not cfg.email_use_tls else 587
+                )
+                attempts = [(465, True), (587, False)] if preferred == 465 else [(587, False), (465, True)]
+
+            smtp = None
+            last_connection_error = None
+            for index, (port, implicit_tls) in enumerate(attempts):
+                candidate = None
+                try:
+                    if implicit_tls:
+                        candidate = smtplib.SMTP_SSL(
+                            cfg.email_smtp_host, port, timeout=SMTP_TIMEOUT, context=context,
+                        )
+                    else:
+                        candidate = smtplib.SMTP(cfg.email_smtp_host, port, timeout=SMTP_TIMEOUT)
+                        candidate.ehlo()
+                        candidate.starttls(context=context)
+                        candidate.ehlo()
+                    smtp = candidate
+                    if security == "auto":
+                        self._smtp_session_port = port
+                    if index:
+                        log.warning(f"SMTP connection unavailable ({last_connection_error}); using port {port}")
+                    break
+                except (OSError, smtplib.SMTPException) as error:
+                    last_connection_error = error
+                    if candidate is not None:
+                        candidate.close()
+            if smtp is None:
+                raise last_connection_error or OSError("SMTP connection failed")
+            with smtp:
+                if cfg.email_user and cfg.email_password:
+                    smtp.login(cfg.email_user, cfg.email_password)
+                smtp.sendmail(msg["From"], [cfg.email_to], msg.as_string())
 
             log.debug(f"Email sent: {subject}")
         except Exception as e:
