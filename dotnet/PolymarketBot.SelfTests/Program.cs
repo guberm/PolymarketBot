@@ -51,8 +51,10 @@ var createSmtpMessageMethod = typeof(Notifier).GetMethod("CreateMessage", Bindin
     ?? throw new Exception("SMTP message compatibility builder is missing");
 var smtpMessage = (MimeKit.MimeMessage)createSmtpMessageMethod.Invoke(null,
     ["from@example.com", "to@example.com", "Subject", "<b>Hello</b>"])!;
-if (smtpMessage.Body is not MimeKit.TextPart { IsPlain: true } smtpText || smtpText.Text != "Hello")
-    throw new Exception("SMTP messages should use a plain-text body for VPN compatibility");
+if (smtpMessage.Body is not MimeKit.TextPart { IsHtml: true } smtpText || smtpText.Text != "<b>Hello</b>")
+    throw new Exception("SMTP messages should use a single HTML body without multipart wrapping");
+if (smtpText.ContentTransferEncoding != MimeKit.ContentEncoding.Base64)
+    throw new Exception("HTML email must be base64-wrapped to stay within SMTP line-length limits");
 
 var thin = ExecutionPricing.CalculateBuy([new BookLevel(0.40, 10)], 10.0);
 if (thin.Complete) throw new Exception("Expected insufficient BUY depth");

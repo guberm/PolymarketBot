@@ -12,7 +12,6 @@ Configure via env vars:
 """
 
 import logging
-import re
 import smtplib
 import ssl
 from datetime import datetime
@@ -115,16 +114,6 @@ def _portfolio_section(portfolio) -> dict:
     }
 
 
-def _html_to_plain(html: str) -> str:
-    """Strip HTML tags for plain-text fallback."""
-    text = re.sub(r'<[^>]+>', ' ', html)
-    text = re.sub(r'&middot;', '·', text)
-    text = re.sub(r'&nbsp;', ' ', text)
-    text = re.sub(r'[ \t]+', ' ', text)
-    text = re.sub(r'\n{3,}', '\n\n', text)
-    return text.strip()
-
-
 class Notifier:
     """Sends email notifications for bot state changes.
 
@@ -145,12 +134,12 @@ class Notifier:
         )
 
     def send(self, subject: str, html_body: str) -> None:
-        """Send a VPN-compatible plain-text email. No-op if disabled."""
+        """Send a VPN-compatible HTML-only email. No-op if disabled."""
         if not self.enabled:
             return
         cfg = self._config
         try:
-            msg = MIMEText(_html_to_plain(html_body), "plain")
+            msg = MIMEText(html_body, "html", "utf-8")
             msg["Subject"] = f"[Polymarket Bot] {subject}"
             msg["From"] = cfg.email_user or f"polymarket-bot@{cfg.email_smtp_host}"
             msg["To"] = cfg.email_to

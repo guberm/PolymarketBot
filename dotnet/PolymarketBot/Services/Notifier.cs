@@ -1,5 +1,4 @@
 using System.Text;
-using System.Text.RegularExpressions;
 using MailKit.Security;
 using Microsoft.Extensions.Logging;
 using MimeKit;
@@ -130,7 +129,11 @@ public sealed class Notifier
         var message = new MimeMessage
         {
             Subject = $"[Polymarket Bot] {subject}",
-            Body = new TextPart("plain") { Text = HtmlToPlain(htmlBody) },
+            Body = new TextPart("html")
+            {
+                Text = htmlBody,
+                ContentTransferEncoding = ContentEncoding.Base64,
+            },
         };
         message.From.Add(MailboxAddress.Parse(from));
         message.To.Add(MailboxAddress.Parse(to));
@@ -447,15 +450,6 @@ public sealed class Notifier
             $"<div style=\"margin-top:16px;padding-top:14px;border-top:1px solid #f3f4f6;font-size:11px;color:#9ca3af;text-align:center\">" +
             $"Polymarket Bot &middot; {timeStr}" +
             $"</div></div></div></body></html>";
-    }
-
-    private static string HtmlToPlain(string html)
-    {
-        var text = Regex.Replace(html, "<[^>]+>", " ");
-        text = text.Replace("&middot;", "·").Replace("&nbsp;", " ");
-        text = Regex.Replace(text, @"[ \t]+", " ");
-        text = Regex.Replace(text, @"\n{3,}", "\n\n");
-        return text.Trim();
     }
 
     private static string PnlColor(double value) => value >= 0 ? ColGreen : ColRed;

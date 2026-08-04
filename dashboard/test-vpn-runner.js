@@ -1,10 +1,17 @@
 'use strict'
 const assert = require('assert')
+const fs = require('fs')
 const path = require('path')
 const { execFileSync } = require('child_process')
 const { toWslPath } = require('./dashboard-model')
 
-const script = toWslPath(path.join(__dirname, 'vpn-runner.sh'))
+const scriptPath = path.join(__dirname, 'vpn-runner.sh')
+const scriptSource = fs.readFileSync(scriptPath, 'utf8')
+assert.ok(!scriptSource.includes('\r\n'), 'vpn-runner.sh must use LF line endings')
+assert.match(scriptSource, /ip rule add priority 100 to "\$SMTP_IP\/32" lookup main/)
+assert.match(scriptSource, /--dports 465,587/)
+assert.match(scriptSource, /\/etc\/netns\/\$NS\/hosts/)
+const script = toWslPath(scriptPath)
 const output = execFileSync('wsl.exe', ['-d', 'Ubuntu', '--', 'bash', script, '--self-test'], { encoding: 'utf8' })
 assert.match(output, /vpn runner self-checks passed/)
 console.log('vpn runner integration self-check passed')

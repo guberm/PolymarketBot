@@ -54,9 +54,10 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(secure.login.call_count, 2)
         self.assertEqual(secure.sendmail.call_count, 2)
         sent_message = secure.sendmail.call_args.args[2]
-        self.assertIn("Content-Type: text/plain", sent_message)
+        self.assertIn("Content-Type: text/html", sent_message)
+        self.assertIn("Content-Transfer-Encoding: base64", sent_message)
         self.assertNotIn("multipart/alternative", sent_message)
-        self.assertNotIn("text/html", sent_message)
+        self.assertNotIn("text/plain", sent_message)
         starttls.close.assert_called_once()
 
     @patch("notifier.smtplib.SMTP_SSL")

@@ -257,6 +257,22 @@ allow_endpoint() {
   [ "$found" = 1 ] || die "Cannot resolve VPN endpoint: $host"
 }
 
+configure_smtp_split_route() {
+  local SMTP_ENABLED SMTP_HOST SMTP_IP
+  SMTP_ENABLED="$(config_value email_enabled | tr '[:upper:]' '[:lower:]')"
+  [ "$SMTP_ENABLED" = true ] || return 0
+  SMTP_HOST="$(config_value email_smtp_host)"
+  [[ "$SMTP_HOST" =~ ^[A-Za-z0-9.-]+$ ]] || { log 'SMTP direct route skipped: invalid host'; return 0; }
+  SMTP_IP="$(ns getent ahostsv4 "$SMTP_HOST" | awk 'NR == 1 { print $1 }')"
+  [ -n "$SMTP_IP" ] || { log "SMTP direct route skipped: cannot resolve $SMTP_HOST"; return 0; }
+
+  cp /etc/hosts "/etc/netns/$NS/hosts"
+  printf '%s %s\n' "$SMTP_IP" "$SMTP_HOST" >> "/etc/netns/$NS/hosts"
+  ns ip rule add priority 100 to "$SMTP_IP/32" lookup main
+  ns iptables -A OUTPUT -o "$NS_IF" -p tcp -d "$SMTP_IP" -m multiport --dports 465,587 -j ACCEPT
+  log "SMTP direct route active for $SMTP_HOST on ports 465/587."
+}
+
 VPN_DNS=""
 if [ "$VPN_MODE" = wireguard ]; then
   grep -Eqi '^\s*(Pre|Post)(Up|Down)\s*=' "$VPN_CONFIG" && die 'WireGuard hook commands are not allowed'
@@ -313,6 +329,7 @@ VPN_IP=""
 wait_for_vpn_ip || die 'VPN tunnel has no Internet access after retries; bot was not started'
 log "Tunnel ready. Bot external IP: $VPN_IP"
 log 'Kill switch active: direct traffic from the bot namespace is blocked.'
+configure_smtp_split_route
 
 export CONFIG_FILE="$CONFIG" DATA_DIR="$DATA"
 cd "$BOT_CWD"
