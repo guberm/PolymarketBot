@@ -229,6 +229,7 @@ def main():
             print(f"[{ts()}] START: fresh portfolio, ${portfolio.bankroll:.2f} bankroll")
         # Persist initial state immediately so portfolio.json exists from the start
         save_snapshot(portfolio.snapshot(), config.data_dir)
+    recheck_persisted_halt = snapshot is not None and portfolio.is_halted and bool(portfolio.positions)
 
     if config.live_trading:
         try:
@@ -307,12 +308,14 @@ def main():
     while running:
         cycle += 1
 
-        if portfolio.is_halted:
+        if portfolio.is_halted and not (cycle == 1 and recheck_persisted_halt):
             log.warning("Portfolio halted — stopping")
             if con:
                 print(f"[{ts()}] {RED}HALTED: portfolio risk limit reached, stopping bot{RESET}")
             notifier.notify_halted("Risk limit reached", portfolio)
             break
+        if portfolio.is_halted:
+            log.warning("Persisted halt has open positions — refreshing quotes before risk recheck")
 
         # Daily reset check
         today = datetime.now(timezone.utc).date().isoformat()
@@ -650,6 +653,11 @@ def main():
             save_snapshot(portfolio.snapshot(), config.data_dir)
             notifier.notify_halted("Portfolio risk limit reached", portfolio)
             break
+        if cycle == 1 and recheck_persisted_halt:
+            log.info(
+                f"Persisted halt cleared after refreshed portfolio passed risk checks "
+                f"(value=${portfolio.equity():.2f})"
+            )
 
         try:
             # Skip scan entirely if bankroll can't fund the smallest possible trade.

@@ -232,6 +232,7 @@ else
     // Persist initial state immediately so portfolio.json exists from the start
     PersistenceService.SaveSnapshot(portfolio.Snapshot(), config.DataDir);
 }
+var recheckPersistedHalt = snapshot is not null && portfolio.IsHalted && portfolio.Positions.Count > 0;
 
 // ── Services ────────────────────────────────────────────────────
 
@@ -362,13 +363,15 @@ while (!cts.Token.IsCancellationRequested)
         ["cycle"] = cycle,
     });
 
-    if (portfolio.IsHalted)
+    if (portfolio.IsHalted && !(cycle == 1 && recheckPersistedHalt))
     {
         log.LogWarning("Portfolio halted — stopping");
         Con($"{RED}HALTED: portfolio risk limit reached, stopping bot{RESET}");
         notifier.NotifyHalted("Risk limit reached", portfolio);
         break;
     }
+    if (portfolio.IsHalted)
+        log.LogWarning("Persisted halt has open positions — refreshing quotes before risk recheck");
 
     // Daily reset
     var today = DateTimeOffset.UtcNow.Date.ToString("yyyy-MM-dd");
@@ -756,6 +759,9 @@ while (!cts.Token.IsCancellationRequested)
         notifier.NotifyHalted("Portfolio risk limit reached", portfolio);
         break;
     }
+    if (cycle == 1 && recheckPersistedHalt)
+        log.LogInformation("Persisted halt cleared after refreshed portfolio passed risk checks (value=${Value:F2})",
+            portfolio.Equity());
 
     try
     {

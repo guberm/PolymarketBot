@@ -252,6 +252,7 @@ class Portfolio:
             self.is_halted = True
             return False
 
+        self.is_halted = False
         return True
 
     def check_risk(self, signal: Signal) -> bool:

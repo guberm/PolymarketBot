@@ -2,7 +2,7 @@ import unittest
 
 from config import BotConfig
 from execution import BookLevel, calculate_buy_quote, calculate_buy_shares_quote, calculate_sell_quote
-from models import Position, Side
+from models import PortfolioSnapshot, Position, Side
 from portfolio import Portfolio
 
 
@@ -71,6 +71,33 @@ class LiquidationEquityTests(unittest.TestCase):
         self.assertAlmostEqual(portfolio.liquidation_value(), 20.0)
         self.assertAlmostEqual(portfolio.equity(), 70.0)
         self.assertFalse(portfolio.check_portfolio_risk())
+
+    def test_healthy_refreshed_portfolio_clears_persisted_halt(self):
+        position = Position(
+            condition_id="recovery-market",
+            question="Recovery test",
+            side=Side.YES,
+            token_id="recovery-token",
+            entry_price=0.50,
+            size_usd=5.0,
+            shares=10.0,
+            current_price=0.60,
+            unrealized_pnl=1.0,
+            category="test",
+        )
+        portfolio = Portfolio(BotConfig(daily_stop_loss_pct=1.0, max_drawdown_pct=0.99), PortfolioSnapshot(
+            bankroll=0.50,
+            initial_bankroll=10.0,
+            positions=[position],
+            high_water_mark=6.50,
+            daily_start_value=6.50,
+            total_realized_pnl=0.0,
+            total_trades=0,
+            is_halted=True,
+        ))
+
+        self.assertTrue(portfolio.check_portfolio_risk())
+        self.assertFalse(portfolio.is_halted)
 
 
 if __name__ == "__main__":

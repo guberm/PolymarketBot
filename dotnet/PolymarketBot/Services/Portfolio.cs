@@ -269,6 +269,7 @@ public sealed class Portfolio
             return false;
         }
 
+        IsHalted = false;
         return true;
     }
 

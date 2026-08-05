@@ -101,6 +101,35 @@ Near(70.0, portfolio.Equity());
 if (portfolio.CheckPortfolioRisk())
     throw new Exception("Expected daily stop-loss to use liquidation equity");
 
+var recoveredPortfolio = new Portfolio(new BotConfig
+{
+    DailyStopLossPct = 1.0,
+    MaxDrawdownPct = 0.99,
+}, loggerFactory.CreateLogger<Portfolio>(), new PortfolioSnapshot
+{
+    Bankroll = 0.50,
+    InitialBankroll = 10.0,
+    HighWaterMark = 6.50,
+    DailyStartValue = 6.50,
+    IsHalted = true,
+    Positions =
+    [
+        new Position
+        {
+            ConditionId = "recovery-market",
+            Question = "Recovery test",
+            Side = Side.YES,
+            TokenId = "recovery-token",
+            EntryPrice = 0.50,
+            SizeUsd = 5.0,
+            Shares = 10.0,
+            CurrentPrice = 0.60,
+        },
+    ],
+});
+if (!recoveredPortfolio.CheckPortfolioRisk() || recoveredPortfolio.IsHalted)
+    throw new Exception("A healthy refreshed portfolio should clear a persisted halt");
+
 if (KalshiShadow.MatchScore(
         "Will Bitcoin exceed $150,000 in 2026?", "Bitcoin above $150,000 in 2026") <= 0.5)
     throw new Exception("Expected matching Kalshi market");
