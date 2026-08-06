@@ -308,7 +308,7 @@ def main():
     while running:
         cycle += 1
 
-        if portfolio.is_halted and not (cycle == 1 and recheck_persisted_halt):
+        if portfolio.is_halted and not recheck_persisted_halt:
             log.warning("Portfolio halted — stopping")
             if con:
                 print(f"[{ts()}] {RED}HALTED: portfolio risk limit reached, stopping bot{RESET}")
@@ -646,18 +646,24 @@ def main():
             deferred_ids, resolved_ids, config.data_dir, config.resolution_retry_hours
         )
 
-        if not portfolio.check_portfolio_risk():
+        risk_check_deferred = portfolio.should_defer_risk_check()
+        if risk_check_deferred:
+            log.warning("Portfolio risk check deferred — position quotes unavailable; market scan skipped")
+            if con:
+                print(f"[{ts()}] {YELLOW}RISK WAIT: position quotes unavailable, retrying next cycle{RESET}")
+        elif not portfolio.check_portfolio_risk():
             log.warning("Portfolio risk limit reached — stopping before market scan")
             if con:
                 print(f"[{ts()}] {RED}HALTED: portfolio risk limit reached, stopping before scan{RESET}")
             save_snapshot(portfolio.snapshot(), config.data_dir)
             notifier.notify_halted("Portfolio risk limit reached", portfolio)
             break
-        if cycle == 1 and recheck_persisted_halt:
+        elif recheck_persisted_halt:
             log.info(
                 f"Persisted halt cleared after refreshed portfolio passed risk checks "
                 f"(value=${portfolio.equity():.2f})"
             )
+            recheck_persisted_halt = False
 
         try:
             # Skip scan entirely if bankroll can't fund the smallest possible trade.
@@ -666,7 +672,11 @@ def main():
             min_required = max(min_pos_pre, config.min_trade_usd)
             trades_this_cycle = 0
 
-            if portfolio.bankroll < min_required:
+            if risk_check_deferred:
+                log.info("Market scan deferred until all open positions have current quotes")
+                markets = []
+                eligible = []
+            elif portfolio.bankroll < min_required:
                 log.info(
                     f"Bankroll ${portfolio.bankroll:.2f} too low to trade "
                     f"(min ~${min_required:.2f}) — skipping scan"

@@ -169,7 +169,8 @@ if (CalibrationWeights.Calculate(new Dictionary<string, ProviderCalibrationStats
     { ["good"] = new(40, 2) }, ["good", "missing"], 40, .25, .65).Count != 0)
     throw new Exception("Calibration weighting should stay gated without enough samples");
 
-var gracePortfolio = new Portfolio(new BotConfig { QuoteFailureGraceCycles = 3, StaleQuoteHaircutPct = .25 },
+var gracePortfolio = new Portfolio(new BotConfig
+    { InitialBankroll = .98, QuoteFailureGraceCycles = 3, StaleQuoteHaircutPct = .25 },
     loggerFactory.CreateLogger<Portfolio>());
 gracePortfolio.Positions.Add(new Position { ConditionId = "g", Question = "g", Side = Side.YES,
     TokenId = "g", EntryPrice = .5, SizeUsd = 5, Shares = 10, CurrentPrice = .4, Category = "x" });
@@ -180,6 +181,10 @@ if (gracePortfolio.GenerateExitSignals().Count != 0)
 gracePortfolio.UpdatePositionQuotes(new Dictionary<string, ExecutionQuote>());
 gracePortfolio.UpdatePositionQuotes(new Dictionary<string, ExecutionQuote>());
 Near(0, gracePortfolio.Positions[0].CurrentPrice);
+if (!gracePortfolio.ShouldDeferRiskCheck() || gracePortfolio.IsHalted)
+    throw new Exception("Missing position quotes should defer risk evaluation without halting");
+if (!gracePortfolio.CheckPortfolioRisk() || gracePortfolio.IsHalted)
+    throw new Exception("Deferred risk evaluation must not mark a quote outage as portfolio death");
 
 var freshExitPortfolio = new Portfolio(new BotConfig(), loggerFactory.CreateLogger<Portfolio>());
 freshExitPortfolio.Positions.Add(new Position { ConditionId = "f", Question = "f", Side = Side.YES,

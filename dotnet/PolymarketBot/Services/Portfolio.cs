@@ -96,6 +96,8 @@ public sealed class Portfolio
 
     public double Equity() => Bankroll + LiquidationValue();
 
+    public bool ShouldDeferRiskCheck() => Positions.Any(p => p.QuoteFailures > 0);
+
     public double CategoryExposure(string category)
         => Positions.Where(p => p.Category == category).Sum(p => p.SizeUsd);
 
@@ -228,6 +230,12 @@ public sealed class Portfolio
 
     public bool CheckPortfolioRisk()
     {
+        if (ShouldDeferRiskCheck())
+        {
+            _log.LogWarning("Portfolio risk check deferred because position quotes are unavailable");
+            return true;
+        }
+
         // Daily stop loss uses executable liquidation value, not cost basis.
         var portfolioValue = Equity();
         var dailyPnl = portfolioValue - DailyStartValue;

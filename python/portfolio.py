@@ -78,6 +78,9 @@ class Portfolio:
     def equity(self) -> float:
         return self.bankroll + self.liquidation_value()
 
+    def should_defer_risk_check(self) -> bool:
+        return any(position.quote_failures > 0 for position in self.positions)
+
     def category_exposure(self, category: str) -> float:
         return sum(p.size_usd for p in self.positions if p.category == category)
 
@@ -218,6 +221,10 @@ class Portfolio:
 
     def check_portfolio_risk(self) -> bool:
         """Return True if portfolio-wide risk limits allow new market scans/trades."""
+        if self.should_defer_risk_check():
+            log.warning("Portfolio risk check deferred because position quotes are unavailable")
+            return True
+
         # Daily stop loss uses executable liquidation value, not cost basis.
         portfolio_value = self.equity()
         daily_pnl = portfolio_value - self.daily_start_value

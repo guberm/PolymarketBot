@@ -363,7 +363,7 @@ while (!cts.Token.IsCancellationRequested)
         ["cycle"] = cycle,
     });
 
-    if (portfolio.IsHalted && !(cycle == 1 && recheckPersistedHalt))
+    if (portfolio.IsHalted && !recheckPersistedHalt)
     {
         log.LogWarning("Portfolio halted — stopping");
         Con($"{RED}HALTED: portfolio risk limit reached, stopping bot{RESET}");
@@ -751,7 +751,13 @@ while (!cts.Token.IsCancellationRequested)
     PersistenceService.UpdateResolutionWatchlist(
         deferredIds, resolvedIds, config.DataDir, config.ResolutionRetryHours);
 
-    if (!portfolio.CheckPortfolioRisk())
+    var riskCheckDeferred = portfolio.ShouldDeferRiskCheck();
+    if (riskCheckDeferred)
+    {
+        log.LogWarning("Portfolio risk check deferred — position quotes unavailable; market scan skipped");
+        Con($"{YELLOW}RISK WAIT: position quotes unavailable, retrying next cycle{RESET}");
+    }
+    else if (!portfolio.CheckPortfolioRisk())
     {
         log.LogWarning("Portfolio risk limit reached — stopping before market scan");
         Con($"{RED}HALTED: portfolio risk limit reached, stopping before scan{RESET}");
@@ -759,9 +765,12 @@ while (!cts.Token.IsCancellationRequested)
         notifier.NotifyHalted("Portfolio risk limit reached", portfolio);
         break;
     }
-    if (cycle == 1 && recheckPersistedHalt)
+    else if (recheckPersistedHalt)
+    {
         log.LogInformation("Persisted halt cleared after refreshed portfolio passed risk checks (value=${Value:F2})",
             portfolio.Equity());
+        recheckPersistedHalt = false;
+    }
 
     try
     {
@@ -771,7 +780,11 @@ while (!cts.Token.IsCancellationRequested)
         var minRequired = Math.Max(minPosPre, config.MinTradeUsd);
         var tradesThisCycle = 0;
 
-        if (portfolio.Bankroll < minRequired)
+        if (riskCheckDeferred)
+        {
+            log.LogInformation("Market scan deferred until all open positions have current quotes");
+        }
+        else if (portfolio.Bankroll < minRequired)
         {
             log.LogInformation(
                 "Bankroll ${Bankroll:F2} too low to trade (min ~${Min:F2}) — skipping scan",
