@@ -5,6 +5,8 @@ import time
 from typing import Optional
 from uuid import uuid4
 
+import requests
+
 from config import BotConfig
 from models import Signal, Trade, Position, Side, TradeAction, ExitSignal, TopupCandidate
 from portfolio import Portfolio
@@ -155,6 +157,12 @@ class LiveTrader:
             return
         self.has_uncertain_intents = True
         log.error(f"CLOB {action} outcome unknown; intent retained for recovery: {exc}")
+        if isinstance(exc, requests.exceptions.RequestException):
+            log.warning(
+                "Transport hint: order POSTs dying after ~60s with Gamma 406s afterwards usually mean "
+                "this VPN exit IP is flagged by Polymarket risk systems. Try network_mode=direct or a "
+                "different VPN server; recovery sweeps any resting order on next start."
+            )
 
     def confirm_applied_orders(self, portfolio: Portfolio) -> None:
         for record in self.journal.pending():

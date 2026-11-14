@@ -34,6 +34,16 @@ public sealed class LiveTrader : ITrader
         return true;
     }
 
+    // Field signature: POST /order hangs ~60s then dies ("An error occurred while
+    // sending the request"), no order is placed, and Gamma starts returning 406 —
+    // the VPN exit IP is flagged by Polymarket risk systems.
+    private void LogTransportHint(Exception ex)
+    {
+        if (ex is not HttpRequestException) return;
+        _log.LogWarning(
+            "Transport hint: order POSTs dying after ~60s with Gamma 406s afterwards usually mean this VPN exit IP is flagged by Polymarket risk systems. Try network_mode=direct or a different VPN server; recovery sweeps any resting order on next start.");
+    }
+
     public void ConfirmAppliedOrders(Portfolio portfolio)
     {
         foreach (var record in _journal.Pending())
@@ -326,6 +336,7 @@ public sealed class LiveTrader : ITrader
         {
             _hasUncertainIntents = true;
             _log.LogError("CLOB BUY outcome unknown; intent retained for recovery: {Error}", ex.Message);
+            LogTransportHint(ex);
             return null;
         }
 
@@ -437,6 +448,7 @@ public sealed class LiveTrader : ITrader
         {
             _hasUncertainIntents = true;
             _log.LogError("CLOB SELL outcome unknown; intent retained for recovery: {Error}", ex.Message);
+            LogTransportHint(ex);
             return null;
         }
 
@@ -518,6 +530,7 @@ public sealed class LiveTrader : ITrader
         {
             _hasUncertainIntents = true;
             _log.LogError("TOPUP BUY outcome unknown; intent retained for recovery: {Error}", ex.Message);
+            LogTransportHint(ex);
             return null;
         }
 
@@ -572,6 +585,7 @@ public sealed class LiveTrader : ITrader
         {
             _hasUncertainIntents = true;
             _log.LogError("TOPUP SELL outcome unknown; intent retained for recovery: {Error}", ex.Message);
+            LogTransportHint(ex);
             return null;
         }
 

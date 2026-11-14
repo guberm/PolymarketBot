@@ -240,6 +240,9 @@ var recheckPersistedHalt = snapshot is not null && portfolio.IsHalted && portfol
 // ── Services ────────────────────────────────────────────────────
 
 using var httpClient = new HttpClient();
+// Explicit UA: an empty User-Agent is a strong Cloudflare bot signal on
+// gamma/clob endpoints and contributes to 406 WAF rejections.
+httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("PolymarketBot/1.7.0 (github.com/guberm/PolymarketBot)");
 httpClient.DefaultRequestHeaders.Add("Accept", "application/json");
 using var cts = new CancellationTokenSource();
 

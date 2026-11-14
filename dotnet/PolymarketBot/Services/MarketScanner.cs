@@ -119,6 +119,17 @@ public sealed class MarketScanner
                     return [];
                 }
 
+                if ((int)resp.StatusCode == 406)
+                {
+                    // Gamma 406 = Cloudflare/WAF rejection. In the field this appears
+                    // when the VPN exit IP gets flagged after failed order POSTs —
+                    // surface it instead of a generic retry loop.
+                    _log.LogError(
+                        "Gamma returned 406 (WAF rejection) — this VPN exit IP is likely flagged by Polymarket risk systems. Try network_mode=direct or a different VPN server; attempts left: {Attempts}",
+                        2 - attempt);
+                    resp.EnsureSuccessStatusCode();
+                }
+
                 resp.EnsureSuccessStatusCode();
                 var json = await resp.Content.ReadAsStringAsync(ct);
                 var doc = JsonDocument.Parse(json);
