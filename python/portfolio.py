@@ -585,6 +585,23 @@ class Portfolio:
             f"(${pos.size_usd:.2f} cost written off, PnL={pnl:+.2f})"
         )
 
+    def close_external_position(self, condition_id: str) -> None:
+        """Remove a position whose tokens vanished while an order intent for it is
+        unresolved (bot POST response lost, or the position was closed manually
+        on the website). Bankroll is corrected by the on-chain balance sync, so
+        NO realized loss is recorded — the sale proceeds already landed on-chain.
+        """
+        pos = next((p for p in self.positions if p.condition_id == condition_id), None)
+        if pos is None:
+            return
+        self._recently_closed[condition_id] = time.time()
+        self.positions = [p for p in self.positions if p.condition_id != condition_id]
+        log.warning(
+            f"External close detected for {pos.question[:40]}... "
+            f"(${pos.size_usd:.2f} cost basis removed; realized PnL NOT adjusted — "
+            "verify bankroll after next on-chain sync)"
+        )
+
     def reset_daily(self, tracking_date: Optional[str] = None) -> None:
         """Reset daily tracking. Call at the start of each new trading day."""
         self.daily_start_value = self.equity()

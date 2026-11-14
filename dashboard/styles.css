@@ -520,11 +520,16 @@ body {
 .exit-bar { height: 100%; border-radius: 2px; }
 
 /* ── Live log ────────────────────────────────────────────────────────────── */
+.log-card .card-header { flex-wrap: wrap; }
+
 .log-controls {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-left: auto;
+  flex: 1 1 100%;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  min-width: 0;
 }
 
 .log-container {

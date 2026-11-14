@@ -351,6 +351,24 @@ class Notifier:
         )
         self.send(f"👻 Ghost removed — ${loss_usd:.2f} written off — {position.question[:60]}", html)
 
+    def notify_external_close(self, position, portfolio) -> None:
+        t = _now()
+        html = _build_html(
+            icon="🤝", title="Position Closed Externally",
+            header_bg=_COLORS["trade"],
+            sections=[
+                {"title": "External Close", "rows": [
+                    ("Market", position.question[:70], _DARK),
+                    ("Side", position.side.value, _DARK),
+                    ("Cost basis removed", f"${position.size_usd:.2f}", _GRAY),
+                    ("Note", "Tokens closed outside the bot (manual sell or lost-response order). Realized PnL was NOT adjusted; bankroll is corrected by the on-chain sync.", _GRAY),
+                ]},
+                _portfolio_section(portfolio),
+            ],
+            time_str=t,
+        )
+        self.send(f"🤝 External close — {position.question[:60]}", html)
+
     def notify_halted(self, reason: str, portfolio) -> None:
         t = _now()
         html = _build_html(

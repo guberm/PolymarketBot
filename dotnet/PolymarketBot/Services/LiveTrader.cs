@@ -11,6 +11,7 @@ public sealed class LiveTrader : ITrader
     private readonly ClobApiClient _clob;
     private readonly ILogger<LiveTrader> _log;
     private readonly OrderJournal _journal;
+    private volatile bool _hasUncertainIntents;
 
     public LiveTrader(ClobApiClient clob, ILogger<LiveTrader> log, string dataDir)
     {
@@ -18,6 +19,19 @@ public sealed class LiveTrader : ITrader
         _log = log;
         _journal = new OrderJournal(dataDir);
         _log.LogInformation("Live CLOB trader initialized");
+    }
+
+    public bool HasUncertainIntents => _hasUncertainIntents;
+
+    public bool HasPendingIntentFor(string conditionId) =>
+        _journal.Pending().Any(r => r.ConditionId == conditionId);
+
+    /// <summary>Deterministic guardrail: no new orders while any live POST outcome is unknown.</summary>
+    private bool UncertainGate(string action)
+    {
+        if (!_hasUncertainIntents) return false;
+        _log.LogError("{Action} refused — an earlier live order returned an unknown outcome; resolve pending-orders.json first", action);
+        return true;
     }
 
     public void ConfirmAppliedOrders(Portfolio portfolio)
@@ -37,12 +51,62 @@ public sealed class LiveTrader : ITrader
                 _journal.Complete(record.IntentId);
                 continue;
             }
+            // Tokens already gone on-chain while the intent never produced an applied
+            // order in the portfolio → the position closed externally (manual sell on
+            // the website, or a lost-response fill). Closing the intent is safe: the
+            // bankroll is corrected by the on-chain sync and no loss must be written.
+            var onChainProbe = await _clob.GetActualConditionalBalanceAsync(record.TokenId, ct);
+            if (onChainProbe is not null && onChainProbe.Value < 0.1 && !portfolio.HasPosition(record.ConditionId))
+            {
+                _log.LogWarning(
+                    "Pending {Kind} order {OrderId}: tokens for {Token} are gone on-chain and no tracked position remains; closing intent as external close",
+                    record.Kind, record.OrderId, record.TokenId);
+                _journal.Complete(record.IntentId);
+                if (record.Kind.Contains("SELL", StringComparison.Ordinal))
+                {
+                    // A vanished SELL position is a real external close; a vanished BUY
+                    // simply means the order never filled and needs no trade record.
+                    PersistenceService.SaveSnapshot(portfolio.Snapshot(), dataDir);
+                    PersistenceService.AppendTrade(new Trade
+                    {
+                        TradeId = Guid.NewGuid().ToString(),
+                        ConditionId = record.ConditionId,
+                        Question = string.IsNullOrEmpty(record.Question) ? "Recovered order" : record.Question,
+                        Side = Enum.TryParse<Side>(record.Side, true, out var probeSide) ? probeSide : Side.YES,
+                        Action = TradeAction.SELL,
+                        Price = 0.0,
+                        SizeUsd = 0.0,
+                        Shares = 0.0,
+                        Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0,
+                        IsPaper = false,
+                        Rationale = "External close detected during recovery: tokens gone on-chain, no tracked position",
+                        ExitReason = "external_close",
+                    }, dataDir);
+                }
+                continue;
+            }
             if (string.IsNullOrEmpty(record.OrderId))
             {
-                _log.LogCritical(
-                    "Uncertain live order intent {Intent}: POST outcome unknown; refusing live trading until pending-orders.json is reconciled manually",
-                    record.IntentId);
-                return false;
+                // POST response was lost; reconcile against on-chain token balance.
+                // Vanished tokens mean the order executed (or the position closed
+                // externally) — apply it and resume. Tokens still held mean the
+                // order may still be live server-side and needs a human check.
+                var onChain = onChainProbe;
+                if (onChain is null || onChain.Value >= 0.1)
+                {
+                    _log.LogCritical(
+                        "Uncertain live order intent {Intent}: POST outcome unknown and token {Token} still on-chain ({Balance}) — refusing live trading until pending-orders.json is reconciled manually",
+                        record.IntentId, record.TokenId, onChain?.ToString("F4") ?? "unknown");
+                    return false;
+                }
+                _log.LogWarning(
+                    "Uncertain live order intent {Intent}: tokens for {Token} are gone on-chain; closing intent and removing tracked position without writing a loss",
+                    record.IntentId, record.TokenId);
+                _journal.Complete(record.IntentId);
+                var vanished = portfolio.Positions.FirstOrDefault(p => p.TokenId == record.TokenId);
+                if (vanished is not null)
+                    portfolio.CloseExternalPosition(vanished.ConditionId);
+                continue;
             }
 
             OrderFill? fill = record.FillShares > 0
@@ -186,6 +250,7 @@ public sealed class LiveTrader : ITrader
 
     public async Task<Trade?> ExecuteAsync(Signal signal, Portfolio portfolio, CancellationToken ct = default)
     {
+        if (UncertainGate("BUY")) return null;
         var market = signal.Market;
         var price = signal.LimitPrice > 0 ? signal.LimitPrice : signal.ExecutionPrice;
         var sizeUsd = signal.PositionSizeUsd;
@@ -220,6 +285,7 @@ public sealed class LiveTrader : ITrader
         }
         catch (Exception ex)
         {
+            _hasUncertainIntents = true;
             _log.LogError("CLOB BUY outcome unknown; intent retained for recovery: {Error}", ex.Message);
             return null;
         }
@@ -285,6 +351,7 @@ public sealed class LiveTrader : ITrader
 
     public async Task<Trade?> ExecuteSellAsync(ExitSignal exitSignal, Portfolio portfolio, CancellationToken ct = default)
     {
+        if (UncertainGate("SELL")) return null;
         var pos = exitSignal.Position;
         if (!pos.BookDepthComplete || pos.LiquidationLimitPrice <= 0)
         {
@@ -329,6 +396,7 @@ public sealed class LiveTrader : ITrader
         }
         catch (Exception ex)
         {
+            _hasUncertainIntents = true;
             _log.LogError("CLOB SELL outcome unknown; intent retained for recovery: {Error}", ex.Message);
             return null;
         }
@@ -372,6 +440,7 @@ public sealed class LiveTrader : ITrader
 
     public async Task<Trade?> ExecuteTopupAndSellAsync(TopupCandidate candidate, Portfolio portfolio, CancellationToken ct = default)
     {
+        if (UncertainGate("TOPUP+SELL")) return null;
         var pos = candidate.Position;
         var buyPrice = candidate.BuyLimitPrice;
         var sellPrice = candidate.SellLimitPrice;
@@ -408,6 +477,7 @@ public sealed class LiveTrader : ITrader
         }
         catch (Exception ex)
         {
+            _hasUncertainIntents = true;
             _log.LogError("TOPUP BUY outcome unknown; intent retained for recovery: {Error}", ex.Message);
             return null;
         }
@@ -461,6 +531,7 @@ public sealed class LiveTrader : ITrader
         }
         catch (Exception ex)
         {
+            _hasUncertainIntents = true;
             _log.LogError("TOPUP SELL outcome unknown; intent retained for recovery: {Error}", ex.Message);
             return null;
         }

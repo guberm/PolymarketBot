@@ -377,32 +377,63 @@ def main():
                 ghost_cids = trader.verify_positions(list(portfolio.positions))
                 for cid in ghost_cids:
                     ghost_pos = next((p for p in portfolio.positions if p.condition_id == cid), None)
-                    if ghost_pos:
-                        ghost_loss = ghost_pos.size_usd
+                    if ghost_pos is None:
+                        continue
+                    if trader.has_pending_intent_for(cid):
+                        # Unresolved order intent exists and tokens are gone — the
+                        # position closed via the lost-response order or manually on
+                        # the website. Bankroll is corrected by the on-chain sync;
+                        # do NOT write a realized loss.
                         log.warning(
-                            f"  GHOST: {ghost_pos.question[:50]}... "
-                            f"(0 tokens on-chain, writing off ${ghost_loss:.2f})"
+                            f"  EXTERNAL CLOSE: {ghost_pos.question[:50]}... "
+                            f"(tracked={ghost_pos.shares:.2f}, on-chain=0, unresolved order intent present)"
                         )
                         if con:
-                            print(f"[{ts()}]   {YELLOW}GHOST: {ghost_pos.question[:50]}... (no tokens on-chain, ${ghost_loss:.2f} lost){RESET}")
-                        ghost_trade = Trade(
+                            print(f"[{ts()}]   {YELLOW}EXTERNAL CLOSE: {ghost_pos.question[:50]}... (unresolved order intent; PnL not adjusted){RESET}")
+                        external_trade = Trade(
                             trade_id=str(uuid4()),
                             condition_id=ghost_pos.condition_id,
                             question=ghost_pos.question,
                             side=ghost_pos.side,
                             action=TradeAction.SELL,
                             price=0.0,
-                            size_usd=ghost_pos.size_usd,
+                            size_usd=0.0,
                             shares=ghost_pos.shares,
                             timestamp=time.time(),
                             is_paper=False,
-                            rationale="Ghost position: no on-chain tokens found",
-                            exit_reason="ghost",
+                            rationale="Position closed externally (bot POST lost or manual sell); bankroll corrected by on-chain sync",
+                            exit_reason="external_close",
                         )
-                        portfolio.remove_ghost_position(cid)
-                        append_trade(ghost_trade, config.data_dir)
+                        portfolio.close_external_position(cid)
+                        append_trade(external_trade, config.data_dir)
                         save_snapshot(portfolio.snapshot(), config.data_dir)
-                        notifier.notify_ghost_removed(ghost_pos, ghost_loss, portfolio)
+                        notifier.notify_external_close(ghost_pos, portfolio)
+                        continue
+                    ghost_loss = ghost_pos.size_usd
+                    log.warning(
+                        f"  GHOST: {ghost_pos.question[:50]}... "
+                        f"(0 tokens on-chain, writing off ${ghost_loss:.2f})"
+                    )
+                    if con:
+                        print(f"[{ts()}]   {YELLOW}GHOST: {ghost_pos.question[:50]}... (no tokens on-chain, ${ghost_loss:.2f} lost){RESET}")
+                    ghost_trade = Trade(
+                        trade_id=str(uuid4()),
+                        condition_id=ghost_pos.condition_id,
+                        question=ghost_pos.question,
+                        side=ghost_pos.side,
+                        action=TradeAction.SELL,
+                        price=0.0,
+                        size_usd=ghost_pos.size_usd,
+                        shares=ghost_pos.shares,
+                        timestamp=time.time(),
+                        is_paper=False,
+                        rationale="Ghost position: no on-chain tokens found",
+                        exit_reason="ghost",
+                    )
+                    portfolio.remove_ghost_position(cid)
+                    append_trade(ghost_trade, config.data_dir)
+                    save_snapshot(portfolio.snapshot(), config.data_dir)
+                    notifier.notify_ghost_removed(ghost_pos, ghost_loss, portfolio)
 
             # Tier 0: check for resolved markets
             # Include both unpriced tokens AND penny positions (CLOB often returns
@@ -527,6 +558,14 @@ def main():
                     print(f"[{ts()}]   EXIT ({es.exit_reason}): {es.position.question[:50]}...")
                     print(f"[{ts()}]     {es.position.entry_price:.4f} -> {es.current_price:.4f} PnL={es.pnl_pct:+.1%}")
 
+                if isinstance(trader, LiveTrader) and trader.has_uncertain_intents:
+                    log.error("Skipping SELL — an earlier live order returned an unknown outcome; resolve pending-orders.json before continuing")
+                    if con:
+                        print(f"[{ts()}]   {RED}SELL BLOCKED: unresolved live order intent; refusing to send new orders{RESET}")
+                    notifier.notify_sell_fail(es.position, es.exit_reason,
+                                              "blocked: unresolved live order intent from a previous unknown-outcome POST")
+                    continue
+
                 trade = trader.execute_sell(es, portfolio)
                 if trade:
                     # Re-sync bankroll from on-chain USDC after sell to correct
@@ -599,6 +638,14 @@ def main():
                         f"[{ts()}]     {tc.position.shares:.2f} tokens + buy 5 @ VWAP {tc.buy_vwap:.4f} "
                         f"(cost=${tc.topup_cost:.2f})"
                     )
+
+                if isinstance(trader, LiveTrader) and trader.has_uncertain_intents:
+                    log.error("Skipping TOPUP+SELL — an earlier live order returned an unknown outcome; resolve pending-orders.json before continuing")
+                    if con:
+                        print(f"[{ts()}]   {RED}TOPUP BLOCKED: unresolved live order intent; refusing to send new orders{RESET}")
+                    notifier.notify_topup_sell_fail(tc,
+                                                    "blocked: unresolved live order intent from a previous unknown-outcome POST")
+                    continue
 
                 trade = trader.execute_topup_and_sell(tc, portfolio)
                 save_snapshot(portfolio.snapshot(), config.data_dir)
@@ -776,6 +823,13 @@ def main():
                     continue
 
                 # Estimate fair value
+                if isinstance(trader, LiveTrader) and trader.has_uncertain_intents:
+                    # Deterministic guardrail: never pay for AI estimates while an
+                    # earlier live order has an unknown outcome.
+                    log.warning("Skipping remaining evaluations — unresolved live order intent; refusing to pay for AI estimates")
+                    if con:
+                        print(f"[{ts()}]   {YELLOW}EVAL SKIPPED: unresolved live order intent; not paying for AI estimates{RESET}")
+                    break
                 log.info(f"  [{i}/{len(eligible)}] Evaluating: {market.question[:60]}...")
                 if con:
                     print(f"[{ts()}]   [{i:>2}/{len(eligible)}] EVAL: {market.question[:55]}...")
@@ -917,6 +971,14 @@ def main():
                 if con:
                     print(f"[{ts()}]   [{i:>2}/{len(eligible)}] -> {estimate.fair_probability:.0%} edge={signal_obj.edge:.1%}")
                     print(f"[{ts()}]   [{i:>2}/{len(eligible)}] >>> BUY {signal_obj.side.value} ${signal_obj.position_size_usd:.2f} @ VWAP {signal_obj.execution_price:.3f}...")
+
+                if isinstance(trader, LiveTrader) and trader.has_uncertain_intents:
+                    log.error("Skipping BUY — an earlier live order returned an unknown outcome; resolve pending-orders.json before continuing")
+                    if con:
+                        print(f"[{ts()}]   {RED}BUY BLOCKED: unresolved live order intent; refusing to send new orders{RESET}")
+                    notifier.notify_buy_fail(market, signal_obj,
+                                             "blocked: unresolved live order intent from a previous unknown-outcome POST")
+                    continue
 
                 trade = trader.execute(signal_obj, portfolio)
                 if trade:

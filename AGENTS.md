@@ -4,7 +4,7 @@ This file provides guidance to Codex (Codex.ai/code) when working with code in t
 
 ## Project Overview
 
-Polymarket trading bot that estimates fair market probabilities via an AI ensemble (Anthropic, Gemini, OpenAI, OpenRouter, or Azure OpenAI), finds mispricing, and executes trades on Polymarket with Kelly criterion sizing. The agent pays for its own inference from its bankroll.
+Polymarket trading bot that estimates fair market probabilities via an AI ensemble (Anthropic, Gemini, OpenAI, OpenRouter, or Azure OpenAI), finds mispricing, and executes trades on Polymarket with Kelly criterion sizing. API spend is tracked separately from the trading bankroll by default.
 
 Two implementations: **Python** (`python/`) and **.NET 8** (`dotnet/PolymarketBot/`). Both share the same logic, config, and data formats.
 
@@ -20,7 +20,7 @@ Minimum for paper trading:
 {
   "anthropic_api_key": "sk-ant-...",
   "anthropic_api_host": "https://api.anthropic.com",
-  "anthropic_model": "Codex-sonnet-4-6",
+  "anthropic_model": "claude-sonnet-4-6",
   "gamma_api_host": "https://gamma-api.polymarket.com",
   "clob_host": "https://clob.polymarket.com"
 }
@@ -60,7 +60,7 @@ dotnet run -- --max-position-pct 0.15 --max-total-exposure-pct 0.90 --daily-stop
 
 Available: `--max-position-pct`, `--max-total-exposure-pct`, `--max-category-exposure-pct`, `--daily-stop-loss-pct`, `--max-drawdown-pct`, `--max-concurrent-positions`, `--verbose`, `--console`.
 
-No test suite or linter configured.
+Tests: Python `python -m unittest discover -s python -p 'test_*.py' -v`; .NET `dotnet run --project dotnet/PolymarketBot.SelfTests/PolymarketBot.SelfTests.csproj --configuration Release`; Dashboard `cd dashboard && npm ci && npm test`; Windows/WSL VPN `cd dashboard && npm run test:vpn`. No linter is configured.
 
 ## Architecture
 
@@ -119,8 +119,8 @@ dotnet/PolymarketBot/
 
 ## Key Design Decisions
 
-- **Multi-provider AI estimation** — `multi_provider: true` queries ALL configured providers simultaneously. Each provider gets `ceil(ensemble_size / num_providers)` calls. Scored by `conviction × confidence` (conviction = |estimate - market_price|, confidence = 1/(std_dev + 0.01)). Final estimate = trimmed mean of per-provider means. Bot stops only if ALL providers fail validation.
-- **Per-provider model fields** — `anthropic_model`, `openai_model`, `gemini_model`, `openrouter_model` are fully independent. No fallback between providers. Defaults: Anthropic=`Codex-sonnet-4-6`, OpenAI=`gpt-4o`, Gemini=`gemini-2.0-flash`.
+- **Multi-provider AI estimation** — `multi_provider: true` queries configured providers concurrently, with `ceil(ensemble_size / num_providers)` calls each. The logged winner score is `confidence / (1 + 8 × abs(provider mean - market price))`, where `confidence = 1 / (std_dev + 0.01)`. Final estimate uses a trimmed mean of provider means, or gated calibration weights when enabled; one provider may contribute when others fail.
+- **Per-provider model fields** — `anthropic_model`, `openai_model`, `gemini_model`, `openrouter_model` are fully independent. No fallback between providers. Defaults: Anthropic=`claude-sonnet-4-6`, OpenAI=`gpt-4o`, Gemini=`gemini-2.0-flash`.
 - **Per-provider `*_enabled` flags** — each provider has `anthropic_enabled`, `gemini_enabled`, `openai_enabled`, `openrouter_enabled`, `azure_openai_enabled` (default true). A provider is only included if BOTH `*_enabled: true` AND its API key is set. Checked in `_get_configured_providers()` (Python) and `GetConfiguredProviders()` (.NET).
 - **No legacy `claude_model`/`ai_model` fields** — removed from codebase. JSON values are still read for backward compat (populate `anthropic_model`), but don't create new configs with them.
 - **API key validation at startup** — both implementations make a minimal 1-token call per configured provider. Multi mode logs `✓`/`✗` per provider; continues if at least one passes.
@@ -132,21 +132,23 @@ dotnet/PolymarketBot/
 - **Estimator system prompt** shows current market price as a Bayesian prior — Codex is told to treat market consensus as an anchor
 - **Anthropic TextBlock safety** — `response.content[0]` can be ThinkingBlock/ToolUseBlock etc. Always use `next(b for b in response.content if hasattr(b, "text"), None)` not `.content[0].text`
 - **Ghost position detection** — each cycle (live only), actual on-chain conditional token balance checked. < 0.1 tokens = ghost: written off immediately with `exit_reason="ghost"`, email notification
+- **External close detection** — ghost-like disappearance with an unresolved live-order intent: position removed via `CloseExternalPosition` without a realized loss (bankroll corrected by the on-chain sync), trade journaled with `exit_reason="external_close"`, dedicated email notification
 - **Position cooldown** — after any close (stop-loss/take-profit/edge-gone/resolved/ghost), blocks re-entry for 2 scan cycles. In-memory, resets on restart. Prevents flip-flopping.
+- **Uncertain-intent guardrail (live)** — a live POST whose outcome is unknown (network error / lost response) sets `LiveTrader.HasUncertainIntents`. While set: no new BUY / SELL / TOPUP orders and no paid AI estimates; startup recovery reconciles pending intents against the on-chain token balance and clears the block when tokens vanished.
 - **Re-estimation during review** — if price moved > `review_reestimate_threshold_pct` (10%), re-run AI with `review_ensemble_size` calls to refresh `fair_estimate_at_entry`
 - **CLOB minimum pre-check** uses `price + 0.02` (aggressive price after 2-tick BUY adjustment), not raw market price. Prevents calling AI only to fail at order execution.
 - **Tick size** — CLOB `/tick-size` API may return `Number` or `String` JSON. Always handle both value kinds.
 - **Confidence filter** — if ensemble std dev > `max_estimate_std` (10%), skip market: `SKIP (low confidence)`
 - **Spread filter** — `max_spread = 0.04`: skip markets with wide bid-ask spreads
 - **Gamma API JSON quirk** — `outcomes`, `outcomePrices`, `clobTokenIds` can be JSON-encoded strings or actual arrays
-- **Risk is layered** — 5 layers: per-position (15%), per-category (80%), total exposure (100%), daily stop-loss (20%), max drawdown (50%). Plus cooldown (6th layer).
+- **Risk is layered** — 6 layers: per-position (15%), per-event (30%), per-category (80%), total exposure (100%), daily stop-loss (20%), and max drawdown (50%). Cooldown is an additional re-entry guard.
 - **Config file** `polymarket_bot_config.json` at project root. `CONFIG_FILE` env var overrides path. Priority: CLI arg → env var → config file → code default
 - **HTML email notifications** — all events use color-coded HTML templates. Events: started, trade, sell, topup+sell, ghost_removed, resolved, halted, daily_reset, error, stopped
 - **CLI args** override env vars/config for risk params
-- **Agent pays for inference** — API token costs deducted each cycle
+- **API cost tracking** — estimated provider spend is accounted against separate cycle and UTC-day USD budgets by default; disabling tracking does not disable LLM calls or reduce the trading bankroll.
 - **Atomic persistence** — portfolio.json written via tmp+rename
 - **Polygon chain** (chain ID 137) for Polymarket settlement
-- **Live trading** uses GTC limit orders. BUY = midpoint + 2 ticks (taker aggression). SELL = midpoint − 2 ticks. Poll 5×3s for MATCHED status, cancel if unfilled.
+- **Live trading** posts GTC limit orders at the fresh full-size quote's worst executable book level; it reconciles matched fills, persists partial fills, and cancels unfilled orders.
 - **Top-up-and-sell** for tiny positions (< 5 tokens): buy 5 tokens, then sell all
 - **Agent survival** — estimation stops at `bankroll < $0.30`; scan skips when bankroll too low for minimum position; truly halts at `bankroll + total_exposure < $1`. `IsHalted` auto-clears on restart if portfolio healthy.
 - **Scan skip threshold** = `max(MinTradeUsd, MaxPositionPct × bankroll)` — free cash only

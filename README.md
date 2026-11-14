@@ -242,6 +242,17 @@ An Electron desktop app that visualises the bot's state in real time.
 
 **Requirements:** Node.js (for first-time `npm install`).
 
+### Tests
+
+Run the deterministic checks from the repository root:
+
+- Python: `cd python && python -m unittest discover -p 'test_*.py' -v`
+- .NET: `dotnet run --project dotnet/PolymarketBot.SelfTests/PolymarketBot.SelfTests.csproj --configuration Release` (requires .NET 8)
+- Dashboard: `cd dashboard && npm ci && npm test`
+- VPN runner integration (Windows + WSL2/Ubuntu): `cd dashboard && npm run test:vpn`
+
+These checks use fixtures or local self-tests; they do not place real Polymarket orders.
+
 ## Evaluation journal and calibration
 
 Every completed estimate is appended to `data/estimates.jsonl`, including the original market price, executable VWAP/limit, confidence, decision, and skip reason. Resolution records allow post-hoc Brier score and calibration analysis:
@@ -450,7 +461,7 @@ Azure also requires: `azure_openai_api_version` (default `2024-02-01`).
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `email_enabled` | `false` | Send plain-text email notifications |
+| `email_enabled` | `false` | Send HTML email notifications |
 | `email_smtp_host` | — | e.g. `smtp.gmail.com` |
 | `email_smtp_port` | `587` | Preferred port used by `auto` mode |
 | `email_security` | `auto` | `auto` tries the preferred mode and falls back between STARTTLS 587 and implicit TLS 465; `starttls` or `ssl` forces one mode |
@@ -461,7 +472,7 @@ Azure also requires: `azure_openai_api_version` (default `2024-02-01`).
 
 Events: bot started, trade opened/closed, ghost removed, market resolved, halted, error, stopped.
 
-The successful SMTP port is reused for the rest of the bot session. Plain-text MIME is intentional: some VPN routes accept authentication but time out while submitting multipart/HTML messages.
+The successful SMTP port is reused for the rest of the bot session. Messages use one HTML MIME body encoded as Base64 to stay within SMTP line-length limits.
 
 ## How Estimation Works
 
@@ -497,6 +508,7 @@ Capped by `max_position_pct` and available bankroll. In live mode, unless `allow
 ## Position Review & Exits
 
 - **Ghost check** — verify on-chain token balance; if < 0.1 tokens, write off as ghost (`exit_reason = "ghost"`)
+- **External close** — if the vanished position has an unresolved live-order intent (lost POST response or a manual sell on the website), the position is removed without writing a realized loss; bankroll is corrected by the on-chain sync (`exit_reason = "external_close"`)
 - **Stop-loss** — if price dropped > 25% from entry, re-estimate first; hold if the refreshed fair value still leaves positive edge
 - **Take-profit** — sell if price ≥ 0.95
 - **Edge-gone** — sell if market moved past original fair estimate
@@ -516,6 +528,11 @@ Six layers:
 6. Max drawdown (50%)
 
 Plus **cooldown**: blocks re-entry for 2 cycles after any close.
+
+## Deterministic guardrails around AI (live mode)
+
+- Any live order whose POST outcome is unknown (network error, lost response) marks the session as **uncertain**. While uncertain: no new BUY / SELL / TOPUP orders are sent, and no new AI estimates are paid for — existing positions and exits are still valued. The block clears after startup recovery reconciles the pending intent against the on-chain token balance.
+- Recovery: if an uncertain intent's tokens have vanished on-chain and no tracked position remains, the intent is closed as `external_close` and the bot starts normally. Tokens still on-chain keep the bot in manual-reconciliation mode.
 
 All limits use **portfolio value** (bankroll + open positions), not just free cash.
 
