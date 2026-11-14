@@ -513,6 +513,26 @@ class ReliabilityTests(unittest.TestCase):
             self.assertEqual(trader.journal.pending(), [])
             self.assertEqual(portfolio.positions, [])
 
+    def test_transport_breaker_opens_after_repeated_unknown_outcomes(self):
+        trader = LiveTrader.__new__(LiveTrader)
+        trader.has_uncertain_intents = False
+        trader._unknown_post_streak = 0
+        trader._transport_blocked_until = 0.0
+
+        trader._handle_order_post_failure("i1", RuntimeError("connection reset"), "SELL")
+        self.assertFalse(trader.transport_degraded)
+        self.assertTrue(trader._uncertain_gate("SELL"))  # intent pending
+
+        trader._handle_order_post_failure("i2", RuntimeError("connection reset"), "SELL")
+        self.assertTrue(trader.transport_degraded)
+        self.assertTrue(trader._uncertain_gate("SELL"))
+        self.assertGreaterEqual(trader._transport_blocked_until, 0)
+
+        trader._note_order_submitted()
+        self.assertFalse(trader.transport_degraded)
+        trader.has_uncertain_intents = False
+        self.assertFalse(trader._uncertain_gate("SELL"))
+
     def test_uncertain_gate_blocks_new_orders(self):
         from models import ExitSignal, Position, Side as ModelSide
 

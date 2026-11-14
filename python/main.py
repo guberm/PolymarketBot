@@ -564,7 +564,7 @@ def main():
                     print(f"[{ts()}]   EXIT ({es.exit_reason}): {es.position.question[:50]}...")
                     print(f"[{ts()}]     {es.position.entry_price:.4f} -> {es.current_price:.4f} PnL={es.pnl_pct:+.1%}")
 
-                if isinstance(trader, LiveTrader) and trader.has_uncertain_intents:
+                if isinstance(trader, LiveTrader) and (trader.has_uncertain_intents or trader.transport_degraded):
                     log.error("Skipping SELL — an earlier live order returned an unknown outcome; resolve pending-orders.json before continuing")
                     if con:
                         print(f"[{ts()}]   {RED}SELL BLOCKED: unresolved live order intent; refusing to send new orders{RESET}")
@@ -645,7 +645,7 @@ def main():
                         f"(cost=${tc.topup_cost:.2f})"
                     )
 
-                if isinstance(trader, LiveTrader) and trader.has_uncertain_intents:
+                if isinstance(trader, LiveTrader) and (trader.has_uncertain_intents or trader.transport_degraded):
                     log.error("Skipping TOPUP+SELL — an earlier live order returned an unknown outcome; resolve pending-orders.json before continuing")
                     if con:
                         print(f"[{ts()}]   {RED}TOPUP BLOCKED: unresolved live order intent; refusing to send new orders{RESET}")
@@ -829,7 +829,7 @@ def main():
                     continue
 
                 # Estimate fair value
-                if isinstance(trader, LiveTrader) and trader.has_uncertain_intents:
+                if isinstance(trader, LiveTrader) and (trader.has_uncertain_intents or trader.transport_degraded):
                     # Deterministic guardrail: never pay for AI estimates while an
                     # earlier live order has an unknown outcome.
                     log.warning("Skipping remaining evaluations — unresolved live order intent; refusing to pay for AI estimates")
@@ -979,7 +979,7 @@ def main():
                     print(f"[{ts()}]   [{i:>2}/{len(eligible)}] -> {estimate.fair_probability:.0%} edge={signal_obj.edge:.1%}")
                     print(f"[{ts()}]   [{i:>2}/{len(eligible)}] >>> BUY {signal_obj.side.value} ${signal_obj.position_size_usd:.2f} @ VWAP {signal_obj.execution_price:.3f}...")
 
-                if isinstance(trader, LiveTrader) and trader.has_uncertain_intents:
+                if isinstance(trader, LiveTrader) and (trader.has_uncertain_intents or trader.transport_degraded):
                     log.error("Skipping BUY — an earlier live order returned an unknown outcome; resolve pending-orders.json before continuing")
                     if con:
                         print(f"[{ts()}]   {RED}BUY BLOCKED: unresolved live order intent; refusing to send new orders{RESET}")

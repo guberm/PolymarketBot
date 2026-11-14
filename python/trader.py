@@ -1,6 +1,8 @@
 """Trade execution — paper trading and live Polymarket CLOB orders."""
 
+import json
 import logging
+import os
 import time
 from typing import Optional
 from uuid import uuid4
@@ -135,17 +137,70 @@ class LiveTrader:
             self.client.set_api_creds(self.client.create_or_derive_api_key())
         self.journal = OrderJournal(config.data_dir)
         self.has_uncertain_intents = False
+        self._unknown_post_streak = 0
+        self._transport_blocked_until = 0.0
+        self._data_dir = config.data_dir
+        self._load_breaker_state()
         log.info("Live CLOB client initialized")
 
     def has_pending_intent_for(self, condition_id: str) -> bool:
         return any(r.get("condition_id") == condition_id for r in self.journal.pending())
 
+    @property
+    def transport_degraded(self) -> bool:
+        """True while the transport circuit breaker is open (repeated unknown order outcomes)."""
+        return time.time() < getattr(self, "_transport_blocked_until", 0.0)
+
     def _uncertain_gate(self, action: str) -> bool:
         """Deterministic guardrail: no new orders while any live POST outcome is unknown."""
+        if self.transport_degraded:
+            log.error(
+                f"{action} refused — transport circuit breaker open after "
+                f"{getattr(self, '_unknown_post_streak', 0)} unknown order outcomes; recovery reconciles intents on restart"
+            )
+            return True
         if not self.has_uncertain_intents:
             return False
         log.error(f"{action} refused — an earlier live order returned an unknown outcome; resolve pending-orders.json first")
         return True
+
+    def _breaker_state_path(self) -> str:
+        return os.path.join(getattr(self, "_data_dir", ""), "transport-breaker.json")
+
+    def _load_breaker_state(self) -> None:
+        try:
+            with open(self._breaker_state_path(), encoding="utf-8") as fh:
+                self._transport_blocked_until = float(json.load(fh).get("blocked_until", 0.0))
+        except (OSError, ValueError):
+            pass
+
+    def _save_breaker_state(self) -> None:
+        # The breaker must survive restarts: the observed hammering pattern was one
+        # failed SELL per run, because recovery clears the intent and the exit retries.
+        data_dir = getattr(self, "_data_dir", None)
+        if not data_dir:
+            return
+        try:
+            path = self._breaker_state_path()
+            if self._transport_blocked_until > time.time():
+                with open(path, "w", encoding="utf-8") as fh:
+                    json.dump({"blocked_until": self._transport_blocked_until}, fh)
+            elif os.path.exists(path):
+                os.remove(path)
+        except OSError:
+            pass
+
+    def _note_unknown_outcome(self) -> None:
+        self._unknown_post_streak = getattr(self, "_unknown_post_streak", 0) + 1
+        if self._unknown_post_streak >= 2:
+            # Circuit breaker: several order POSTs hanging ~60s in a row (flagged VPN
+            # exit IP) each burn a cycle and an intent; pause live orders for 15 min.
+            self._transport_blocked_until = time.time() + 900
+            self._save_breaker_state()
+            log.error(
+                "Transport circuit breaker OPEN for 15 min after "
+                f"{self._unknown_post_streak} consecutive unknown order outcomes; live orders paused"
+            )
 
     def _handle_order_post_failure(self, intent_id: str, exc: Exception, action: str) -> None:
         status = getattr(exc, "status_code", None)
@@ -156,6 +211,7 @@ class LiveTrader:
             log.error(f"CLOB rejected {action} with HTTP {status}: {exc}")
             return
         self.has_uncertain_intents = True
+        self._note_unknown_outcome()
         log.error(f"CLOB {action} outcome unknown; intent retained for recovery: {exc}")
         if isinstance(exc, requests.exceptions.RequestException):
             log.warning(
@@ -163,6 +219,11 @@ class LiveTrader:
                 "this VPN exit IP is flagged by Polymarket risk systems. Try network_mode=direct or a "
                 "different VPN server; recovery sweeps any resting order on next start."
             )
+
+    def _note_order_submitted(self) -> None:
+        self._unknown_post_streak = 0
+        self._transport_blocked_until = 0.0
+        self._save_breaker_state()
 
     def confirm_applied_orders(self, portfolio: Portfolio) -> None:
         for record in self.journal.pending():
@@ -281,6 +342,7 @@ class LiveTrader:
                     f"Uncertain live order intent {intent_id}: no resting order and no fill "
                     f"(tokens={remaining:.4f}); closing intent and resuming"
                 )
+                self._note_unknown_outcome()
                 self.journal.complete(intent_id)
                 continue
 
@@ -456,6 +518,7 @@ class LiveTrader:
 
             order_id = resp.get("orderID") or resp.get("id") or str(uuid4())
             self.journal.submitted(intent_id, order_id)
+            self._note_order_submitted()
             log.info(f"CLOB GTC order submitted: {order_id}")
 
         except Exception as e:
@@ -598,6 +661,7 @@ class LiveTrader:
             resp = self.client.post_order(signed_order, OrderType.GTC)
             order_id = resp.get("orderID") or resp.get("id") or str(uuid4())
             self.journal.submitted(intent_id, order_id)
+            self._note_order_submitted()
             log.info(f"CLOB SELL GTC order submitted: {order_id}")
         except Exception as e:
             self._handle_order_post_failure(intent_id, e, "SELL")
@@ -667,6 +731,7 @@ class LiveTrader:
             resp = self.client.post_order(signed_order, OrderType.GTC)
             buy_order_id = resp.get("orderID") or resp.get("id") or str(uuid4())
             self.journal.submitted(buy_intent_id, buy_order_id)
+            self._note_order_submitted()
             log.info(f"TOPUP BUY GTC order submitted: {buy_order_id}")
         except Exception as e:
             self._handle_order_post_failure(buy_intent_id, e, "TOPUP BUY")
@@ -716,6 +781,7 @@ class LiveTrader:
             resp = self.client.post_order(signed_order, OrderType.GTC)
             sell_order_id = resp.get("orderID") or resp.get("id") or str(uuid4())
             self.journal.submitted(sell_intent_id, sell_order_id)
+            self._note_order_submitted()
             log.info(f"TOPUP SELL GTC order submitted: {sell_order_id}")
         except Exception as e:
             self._handle_order_post_failure(sell_intent_id, e, "TOPUP SELL")

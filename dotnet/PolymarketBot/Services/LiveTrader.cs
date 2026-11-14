@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Logging;
 using PolymarketBot.Models;
+using System.Text.Json;
 
 namespace PolymarketBot.Services;
 
@@ -12,16 +13,24 @@ public sealed class LiveTrader : ITrader
     private readonly ILogger<LiveTrader> _log;
     private readonly OrderJournal _journal;
     private volatile bool _hasUncertainIntents;
+    private int _unknownPostStreak;
+    private DateTime _transportBlockedUntil = DateTime.MinValue;
+    private readonly string _dataDir;
 
     public LiveTrader(ClobApiClient clob, ILogger<LiveTrader> log, string dataDir)
     {
         _clob = clob;
         _log = log;
         _journal = new OrderJournal(dataDir);
+        _dataDir = dataDir;
+        LoadBreakerState();
         _log.LogInformation("Live CLOB trader initialized");
     }
 
     public bool HasUncertainIntents => _hasUncertainIntents;
+
+    /// <summary>True while the transport circuit breaker is open (repeated unknown order outcomes).</summary>
+    public bool IsDegraded => DateTime.UtcNow < _transportBlockedUntil;
 
     public bool HasPendingIntentFor(string conditionId) =>
         _journal.Pending().Any(r => r.ConditionId == conditionId);
@@ -29,6 +38,13 @@ public sealed class LiveTrader : ITrader
     /// <summary>Deterministic guardrail: no new orders while any live POST outcome is unknown.</summary>
     private bool UncertainGate(string action)
     {
+        if (IsDegraded)
+        {
+            _log.LogError(
+                "{Action} refused — transport circuit breaker open until {Until:u} after {Streak} unknown order outcomes; recovery reconciles intents on restart",
+                action, _transportBlockedUntil, _unknownPostStreak);
+            return true;
+        }
         if (!_hasUncertainIntents) return false;
         _log.LogError("{Action} refused — an earlier live order returned an unknown outcome; resolve pending-orders.json first", action);
         return true;
@@ -42,6 +58,54 @@ public sealed class LiveTrader : ITrader
         if (ex is not HttpRequestException) return;
         _log.LogWarning(
             "Transport hint: order POSTs dying after ~60s with Gamma 406s afterwards usually mean this VPN exit IP is flagged by Polymarket risk systems. Try network_mode=direct or a different VPN server; recovery sweeps any resting order on next start.");
+    }
+
+    // Circuit breaker: the observed failure mode was several order POSTs hanging ~60s
+    // in a row (flagged VPN exit IP), each burning a cycle and an intent. Two
+    // consecutive unknown outcomes open a 15-min cooldown; any submitted order resets.
+    private void NoteOrderSubmitted()
+    {
+        _unknownPostStreak = 0;
+        _transportBlockedUntil = DateTime.MinValue;
+        SaveBreakerState();
+    }
+
+    private void NoteUnknownOutcome()
+    {
+        _unknownPostStreak++;
+        if (_unknownPostStreak < 2) return;
+        _transportBlockedUntil = DateTime.UtcNow.AddMinutes(15);
+        SaveBreakerState();
+        _log.LogError(
+            "Transport circuit breaker OPEN for 15 min after {Streak} consecutive unknown order outcomes; live orders paused",
+            _unknownPostStreak);
+    }
+
+    // The breaker must survive restarts: the observed hammering pattern was one
+    // failed SELL per run, because recovery clears the intent and the exit retries.
+    private void LoadBreakerState()
+    {
+        try
+        {
+            var path = Path.Combine(_dataDir, "transport-breaker.json");
+            if (!File.Exists(path)) return;
+            var doc = JsonDocument.Parse(File.ReadAllText(path));
+            if (doc.RootElement.TryGetProperty("blocked_until", out var until))
+                _transportBlockedUntil = DateTimeOffset.FromUnixTimeSeconds(until.GetInt64()).UtcDateTime;
+        }
+        catch (Exception ex) { _log.LogDebug("Breaker state not restored: {Err}", ex.Message); }
+    }
+
+    private void SaveBreakerState()
+    {
+        try
+        {
+            var path = Path.Combine(_dataDir, "transport-breaker.json");
+            if (_transportBlockedUntil > DateTime.UtcNow)
+                File.WriteAllText(path, $"{{\"blocked_until\":{((DateTimeOffset)_transportBlockedUntil).ToUnixTimeSeconds()}}}");
+            else if (File.Exists(path)) File.Delete(path);
+        }
+        catch (Exception ex) { _log.LogDebug("Breaker state not persisted: {Err}", ex.Message); }
     }
 
     public void ConfirmAppliedOrders(Portfolio portfolio)
@@ -154,6 +218,7 @@ public sealed class LiveTrader : ITrader
                 _log.LogWarning(
                     "Uncertain live order intent {Intent}: no resting order and no fill (tokens={Balance}); closing intent and resuming",
                     record.IntentId, remaining.ToString("F4"));
+                NoteUnknownOutcome();
                 _journal.Complete(record.IntentId);
                 continue;
             }
@@ -324,6 +389,7 @@ public sealed class LiveTrader : ITrader
                 return null;
             }
             _journal.Submitted(intentId, result.OrderId);
+            NoteOrderSubmitted();
             _log.LogInformation("CLOB GTC order submitted: {OrderId}", result.OrderId);
         }
         catch (ClobOrderRejectedException ex)
@@ -335,6 +401,7 @@ public sealed class LiveTrader : ITrader
         catch (Exception ex)
         {
             _hasUncertainIntents = true;
+            NoteUnknownOutcome();
             _log.LogError("CLOB BUY outcome unknown; intent retained for recovery: {Error}", ex.Message);
             LogTransportHint(ex);
             return null;
@@ -436,6 +503,7 @@ public sealed class LiveTrader : ITrader
                 return null;
             }
             _journal.Submitted(intentId, result.OrderId);
+            NoteOrderSubmitted();
             _log.LogInformation("CLOB SELL GTC order submitted: {OrderId}", result.OrderId);
         }
         catch (ClobOrderRejectedException ex)
@@ -447,6 +515,7 @@ public sealed class LiveTrader : ITrader
         catch (Exception ex)
         {
             _hasUncertainIntents = true;
+            NoteUnknownOutcome();
             _log.LogError("CLOB SELL outcome unknown; intent retained for recovery: {Error}", ex.Message);
             LogTransportHint(ex);
             return null;
@@ -518,6 +587,7 @@ public sealed class LiveTrader : ITrader
                 return null;
             }
             _journal.Submitted(buyIntentId, buyResult.OrderId);
+            NoteOrderSubmitted();
             _log.LogInformation("TOPUP BUY GTC order submitted: {OrderId}", buyResult.OrderId);
         }
         catch (ClobOrderRejectedException ex)
@@ -529,6 +599,7 @@ public sealed class LiveTrader : ITrader
         catch (Exception ex)
         {
             _hasUncertainIntents = true;
+            NoteUnknownOutcome();
             _log.LogError("TOPUP BUY outcome unknown; intent retained for recovery: {Error}", ex.Message);
             LogTransportHint(ex);
             return null;
@@ -573,6 +644,7 @@ public sealed class LiveTrader : ITrader
                 return null;
             }
             _journal.Submitted(sellIntentId, sellResult.OrderId);
+            NoteOrderSubmitted();
             _log.LogInformation("TOPUP SELL GTC order submitted: {OrderId}", sellResult.OrderId);
         }
         catch (ClobOrderRejectedException ex)
@@ -584,6 +656,7 @@ public sealed class LiveTrader : ITrader
         catch (Exception ex)
         {
             _hasUncertainIntents = true;
+            NoteUnknownOutcome();
             _log.LogError("TOPUP SELL outcome unknown; intent retained for recovery: {Error}", ex.Message);
             LogTransportHint(ex);
             return null;

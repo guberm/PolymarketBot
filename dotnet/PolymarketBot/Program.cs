@@ -660,7 +660,7 @@ while (!cts.Token.IsCancellationRequested)
                 Con($"    {es.Position.EntryPrice:F4} -> {es.CurrentPrice:F4} PnL={es.PnlPct:+0.0%;-0.0%}");
             }
 
-            if (liveTrader is { HasUncertainIntents: true })
+            if (liveTrader is { HasUncertainIntents: true } or { IsDegraded: true })
             {
                 log.LogError("Skipping SELL — an earlier live order returned an unknown outcome; resolve pending-orders.json before continuing");
                 Con($"{RED}SELL BLOCKED: unresolved live order intent; refusing to send new orders{RESET}");
@@ -745,7 +745,7 @@ while (!cts.Token.IsCancellationRequested)
                 Con($"    {tc.Position.Shares:F2} tokens + buy 5 @ VWAP {tc.BuyVwap:F4} (cost=${tc.TopupCost:F2})");
             }
 
-            if (liveTrader is { HasUncertainIntents: true })
+            if (liveTrader is { HasUncertainIntents: true } or { IsDegraded: true })
             {
                 log.LogError("Skipping TOPUP+SELL — an earlier live order returned an unknown outcome; resolve pending-orders.json before continuing");
                 Con($"{RED}TOPUP BLOCKED: unresolved live order intent; refusing to send new orders{RESET}");
@@ -854,7 +854,7 @@ while (!cts.Token.IsCancellationRequested)
         else
         {
 
-        if (liveTrader is { HasUncertainIntents: true })
+        if (liveTrader is { HasUncertainIntents: true } or { IsDegraded: true })
             log.LogWarning(
                 "Market scan proceeds but all new evaluations will be skipped — an earlier live order returned an unknown outcome; resolve pending-orders.json");
         log.LogInformation("Scanning markets...");
@@ -906,7 +906,7 @@ while (!cts.Token.IsCancellationRequested)
             // Deterministic guardrail: never pay for AI estimates while an earlier
             // live order has an unknown outcome (Reddit principle: LLM reasoning
             // inside deterministic guardrails).
-            if (liveTrader is { HasUncertainIntents: true })
+            if (liveTrader is { HasUncertainIntents: true } or { IsDegraded: true })
             {
                 if (i == 0)
                 {
@@ -1095,7 +1095,7 @@ while (!cts.Token.IsCancellationRequested)
                 Con($"  {idx} >>> BUY {signal.Side} ${signal.PositionSizeUsd:F2} @ VWAP {signal.ExecutionPrice:F3}...");
             }
 
-            if (liveTrader is { HasUncertainIntents: true })
+            if (liveTrader is { HasUncertainIntents: true } or { IsDegraded: true })
             {
                 log.LogError("Skipping BUY — an earlier live order returned an unknown outcome; resolve pending-orders.json before continuing");
                 Con($"{RED}BUY BLOCKED: unresolved live order intent; refusing to send new orders{RESET}");

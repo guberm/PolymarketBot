@@ -697,6 +697,64 @@ using (var recoveryHttp = new HttpClient(recoveryHandler))
 }
 Directory.Delete(recoveryDir, true);
 
+// Transport circuit breaker across restarts: run 1 fails a SELL POST (unknown
+// outcome); run 2 recovers the intent, retries the exit and fails again — the
+// breaker opens and persists; run 3 loads it and refuses without POSTing.
+var breakerDir = Path.Combine(Path.GetTempPath(), $"polymarket-breaker-{Guid.NewGuid()}");
+Directory.CreateDirectory(breakerDir);
+var breakerHandler = new TransportFailureOrderHandler();
+using (var breakerHttp = new HttpClient(breakerHandler))
+{
+    LiveTrader MakeBreakerTrader() => new(
+        new ClobApiClient(new BotConfig
+        {
+            ClobHost = "https://clob.test",
+            PolymarketPrivateKey = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
+            PolymarketChainId = 137,
+            PolymarketSignatureType = 1,
+            PolymarketApiKey = "owner",
+            PolymarketApiSecret = "dGVzdA==",
+            PolymarketApiPassphrase = "pass",
+        }, breakerHttp, loggerFactory.CreateLogger<ClobApiClient>()),
+        loggerFactory.CreateLogger<LiveTrader>(), breakerDir);
+    var breakerPortfolio = new Portfolio(new BotConfig { InitialBankroll = 10 }, loggerFactory.CreateLogger<Portfolio>());
+    breakerPortfolio.OpenPosition(new Position
+    {
+        ConditionId = "brk", Question = "Brk", Side = Side.NO, TokenId = "tok-brk",
+        EntryPrice = .5, SizeUsd = 5, Shares = 10, CurrentPrice = .92,
+        UnrealizedPnl = .42, Category = "x", LiquidationLimitPrice = .92,
+    });
+    ExitSignal BrkSignal() => new()
+    {
+        Position = breakerPortfolio.Positions[0], ExitReason = "take_profit",
+        CurrentPrice = .92, UnrealizedPnl = .42, PnlPct = .42 / 5,
+    };
+
+    var traderA = MakeBreakerTrader();
+    if (await traderA.ExecuteSellAsync(BrkSignal(), breakerPortfolio) is not null)
+        throw new Exception("Run 1 unknown-outcome SELL must not return a trade");
+    if (traderA.IsDegraded) throw new Exception("Breaker must stay closed after run 1's single unknown outcome");
+
+    var traderB = MakeBreakerTrader(); // fresh instance = restart
+    if (!await traderB.RecoverPendingOrdersAsync(breakerPortfolio, breakerDir, CancellationToken.None))
+        throw new Exception("Recovery of run 1's lost-response intent must close it and resume");
+    if (await traderB.ExecuteSellAsync(BrkSignal(), breakerPortfolio) is not null)
+        throw new Exception("Run 2 retry SELL must not return a trade");
+    if (!traderB.IsDegraded)
+        throw new Exception("Circuit breaker must open after run 2's retry also returned an unknown outcome");
+
+    var traderC = MakeBreakerTrader(); // restart again
+    if (!traderC.IsDegraded) throw new Exception("Open breaker must survive a restart via transport-breaker.json");
+    var postsAfterTwo = breakerHandler.OrderPosts;
+    if (await traderC.ExecuteSellAsync(BrkSignal(), breakerPortfolio) is not null)
+        throw new Exception("Breaker-open SELL must be refused");
+    if (breakerHandler.OrderPosts != postsAfterTwo)
+        throw new Exception("Breaker-open SELL must not touch the transport");
+    if (new OrderJournal(breakerDir).Pending().Count != 1)
+        throw new Exception("Run 2's unknown-outcome intent must remain pending for recovery");
+}
+Directory.Delete(breakerDir, true);
+
 Console.WriteLine("Self-tests passed");
 
 sealed class StaticResponseHandler(string body) : HttpMessageHandler
@@ -730,6 +788,34 @@ sealed class LostResponseOrderHandler : HttpMessageHandler
     {
         Content = new StringContent(body, System.Text.Encoding.UTF8, "application/json")
     });
+}
+
+// Simulates the ~60s transport hang: every POST /order dies with no response.
+sealed class TransportFailureOrderHandler : HttpMessageHandler
+{
+    public int OrderPosts { get; private set; }
+
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        if (request.RequestUri!.AbsolutePath == "/order" && request.Method == HttpMethod.Post)
+        {
+            OrderPosts++;
+            throw new HttpRequestException("simulated 60s transport hang");
+        }
+        if (request.RequestUri!.AbsolutePath == "/balance-allowance")
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("""{"balance":"10000000"}""", System.Text.Encoding.UTF8, "application/json")
+            });
+        if (request.RequestUri!.AbsolutePath == "/data/orders")
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("""{"data":[],"next_cursor":"LTE="}""", System.Text.Encoding.UTF8, "application/json")
+            });
+        if (request.RequestUri!.AbsolutePath == "/balance-allowance/update")
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK));
+        return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
+    }
 }
 
 sealed class WeatherMergeHandler : HttpMessageHandler
