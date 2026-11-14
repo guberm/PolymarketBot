@@ -576,6 +576,32 @@ var unrelatedSignal = new Signal
 };
 if (!eventPortfolio.CheckRisk(unrelatedSignal)) throw new Exception("Different event was incorrectly blocked");
 
+// External-close accounting: unresolved intent + vanished tokens must NOT write a realized loss.
+var externalPortfolio = new Portfolio(new BotConfig { InitialBankroll = 10 }, loggerFactory.CreateLogger<Portfolio>());
+externalPortfolio.OpenPosition(new Position
+{
+    ConditionId = "manual-sell", Question = "Manual sell", Side = Side.NO, TokenId = "tok-manual",
+    EntryPrice = .76, SizeUsd = 4.15, Shares = 5.46, CurrentPrice = .92, UnrealizedPnl = .87, Category = "x",
+});
+var pnlBeforeExternal = externalPortfolio.TotalRealizedPnl;
+var bankrollBeforeExternal = externalPortfolio.Bankroll;
+externalPortfolio.CloseExternalPosition("manual-sell");
+if (externalPortfolio.Positions.Count != 0) throw new Exception("External close should remove the position");
+if (Math.Abs(externalPortfolio.TotalRealizedPnl - pnlBeforeExternal) > 1e-9)
+    throw new Exception("External close must not write a realized loss");
+if (Math.Abs(externalPortfolio.Bankroll - bankrollBeforeExternal) > 1e-9)
+    throw new Exception("External close must not adjust bankroll directly");
+
+var ghostPortfolio = new Portfolio(new BotConfig { InitialBankroll = 10 }, loggerFactory.CreateLogger<Portfolio>());
+ghostPortfolio.OpenPosition(new Position
+{
+    ConditionId = "true-ghost", Question = "True ghost", Side = Side.NO, TokenId = "tok-ghost",
+    EntryPrice = .5, SizeUsd = 5, Shares = 10, CurrentPrice = .4, UnrealizedPnl = -1, Category = "x",
+});
+ghostPortfolio.RemoveGhostPosition("true-ghost");
+if (Math.Abs(ghostPortfolio.TotalRealizedPnl - (-5)) > 1e-9)
+    throw new Exception("Ghost removal must still write the full cost-basis loss");
+
 Console.WriteLine("Self-tests passed");
 
 sealed class StaticResponseHandler(string body) : HttpMessageHandler

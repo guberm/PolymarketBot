@@ -291,6 +291,22 @@ public sealed class Notifier
         Send($"👻 Ghost removed — ${lossUsd:F2} written off — {Truncate(pos.Question, 60)}", html);
     }
 
+    public void NotifyExternalClose(Position pos, Portfolio portfolio)
+    {
+        var t = Now();
+        var html = BuildHtml("🤝", "Position Closed Externally", ColTrade,
+            new[] {
+                Section("External Close",
+                    Row("Market", Truncate(pos.Question, 70)),
+                    Row("Side", pos.Side.ToString()),
+                    Row("Cost basis removed", $"${pos.SizeUsd:F2}", ColGray),
+                    Row("Note", "Tokens closed outside the bot (manual sell or lost-response order). Realized PnL was NOT adjusted; bankroll is corrected by the on-chain sync.", ColGray)
+                ),
+                PortfolioSection(portfolio)
+            }, t);
+        Send($"🤝 External close — {Truncate(pos.Question, 60)}", html);
+    }
+
     public void NotifyHalted(string reason, Portfolio portfolio)
     {
         var t = Now();

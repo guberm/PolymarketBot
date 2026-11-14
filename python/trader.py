@@ -132,7 +132,18 @@ class LiveTrader:
         if creds is None:
             self.client.set_api_creds(self.client.create_or_derive_api_key())
         self.journal = OrderJournal(config.data_dir)
+        self.has_uncertain_intents = False
         log.info("Live CLOB client initialized")
+
+    def has_pending_intent_for(self, condition_id: str) -> bool:
+        return any(r.get("condition_id") == condition_id for r in self.journal.pending())
+
+    def _uncertain_gate(self, action: str) -> bool:
+        """Deterministic guardrail: no new orders while any live POST outcome is unknown."""
+        if not self.has_uncertain_intents:
+            return False
+        log.error(f"{action} refused — an earlier live order returned an unknown outcome; resolve pending-orders.json first")
+        return True
 
     def _handle_order_post_failure(self, intent_id: str, exc: Exception, action: str) -> None:
         status = getattr(exc, "status_code", None)
@@ -142,6 +153,7 @@ class LiveTrader:
                 raise TradingBlockedError(f"CLOB rejected {action} with HTTP 403: {exc}") from exc
             log.error(f"CLOB rejected {action} with HTTP {status}: {exc}")
             return
+        self.has_uncertain_intents = True
         log.error(f"CLOB {action} outcome unknown; intent retained for recovery: {exc}")
 
     def confirm_applied_orders(self, portfolio: Portfolio) -> None:
@@ -152,6 +164,7 @@ class LiveTrader:
     def recover_pending_orders(self, portfolio: Portfolio) -> bool:
         """Cancel/reconcile durable intents and apply fills exactly once before live trading resumes."""
         from persistence import append_trade, save_snapshot
+        data_dir = portfolio.config.data_dir
 
         for record in self.journal.pending():
             intent_id = record["intent_id"]
@@ -159,12 +172,61 @@ class LiveTrader:
             if order_id and portfolio.has_applied_order(order_id):
                 self.journal.complete(intent_id)
                 continue
-            if not order_id:
-                log.critical(
-                    f"Uncertain live order intent {intent_id}: POST outcome unknown; "
-                    "refusing live trading until pending-orders.json is reconciled manually"
+            # Tokens already gone on-chain while the intent never produced an applied
+            # order in the portfolio → the position closed externally (manual sell on
+            # the website, or a lost-response fill). Closing the intent is safe: the
+            # bankroll is corrected by the on-chain sync and no loss must be written.
+            on_chain_probe = self._get_actual_conditional_balance(record.get("token_id", ""))
+            if on_chain_probe is not None and on_chain_probe < 0.1 and not portfolio.has_position(record["condition_id"]):
+                log.warning(
+                    f"Pending {record.get('kind')} order {order_id}: tokens for {record.get('token_id', '')} are gone "
+                    "on-chain and no tracked position remains; closing intent as external close"
                 )
-                return False
+                self.journal.complete(intent_id)
+                if "SELL" in record.get("kind", ""):
+                    # A vanished SELL position is a real external close; a vanished BUY
+                    # simply means the order never filled and needs no trade record.
+                    from models import Trade as _TradeModel, TradeAction as _TradeAction, Side as _SideModel
+                    append_trade(_TradeModel(
+                        trade_id=str(uuid4()),
+                        condition_id=record["condition_id"],
+                        question=record.get("question", "Recovered order"),
+                        side=_SideModel(record.get("side", "YES")),
+                        action=_TradeAction.SELL,
+                        price=0.0,
+                        size_usd=0.0,
+                        shares=0.0,
+                        timestamp=time.time(),
+                        is_paper=False,
+                        rationale="External close detected during recovery: tokens gone on-chain, no tracked position",
+                        exit_reason="external_close",
+                    ), data_dir)
+                    save_snapshot(portfolio.snapshot(), data_dir)
+                continue
+            if not order_id:
+                # POST response was lost; reconcile against on-chain token balance.
+                # Vanished tokens mean the order executed (or the position closed
+                # externally) — apply it and resume. Tokens still held mean the
+                # order may still be live server-side and needs a human check.
+                on_chain = on_chain_probe
+                if on_chain is None or on_chain >= 0.1:
+                    log.critical(
+                        f"Uncertain live order intent {intent_id}: POST outcome unknown and token "
+                        f"{record.get('token_id', '')} still on-chain ({on_chain if on_chain is not None else 'unknown'}) — "
+                        "refusing live trading until pending-orders.json is reconciled manually"
+                    )
+                    return False
+                log.warning(
+                    f"Uncertain live order intent {intent_id}: tokens for {record.get('token_id', '')} are gone on-chain; "
+                    "closing intent and removing tracked position without writing a loss"
+                )
+                self.journal.complete(intent_id)
+                vanished = next(
+                    (p for p in portfolio.positions if p.token_id == record.get("token_id", "")), None
+                )
+                if vanished is not None:
+                    portfolio.close_external_position(vanished.condition_id)
+                continue
 
             fill = None
             if record.get("fill_shares", 0) > 0:
@@ -306,6 +368,8 @@ class LiveTrader:
     def execute(self, signal: Signal, portfolio: Portfolio) -> Optional[Trade]:
         from py_clob_client_v2 import OrderArgs, OrderType, Side as ClobSide
 
+        if self._uncertain_gate("BUY"):
+            return None
         market = signal.market
         # The pre-trade order-book quote already selected the worst acceptable level.
         price = signal.limit_price or signal.execution_price
@@ -432,6 +496,8 @@ class LiveTrader:
     def execute_sell(self, exit_signal: ExitSignal, portfolio: Portfolio) -> Optional[Trade]:
         from py_clob_client_v2 import OrderArgs, OrderType, Side as ClobSide
 
+        if self._uncertain_gate("SELL"):
+            return None
         pos = exit_signal.position
         if not pos.book_depth_complete or pos.liquidation_limit_price <= 0:
             log.warning(f"SKIP SELL (insufficient bid depth): {pos.question[:40]}")
@@ -514,6 +580,8 @@ class LiveTrader:
         """Buy 5 tokens to reach CLOB minimum, then sell all tokens to exit stuck position."""
         from py_clob_client_v2 import OrderArgs, OrderType, Side as ClobSide
 
+        if self._uncertain_gate("TOPUP+SELL"):
+            return None
         pos = candidate.position
         buy_price = candidate.buy_limit_price
         sell_price = candidate.sell_limit_price

@@ -658,6 +658,23 @@ public sealed class Portfolio
         return pnl;
     }
 
+    /// <summary>
+    /// Remove a position whose tokens vanished while an order intent for it is
+    /// unresolved (bot POST response lost, or the position was closed manually
+    /// on the website). Bankroll is corrected by the on-chain balance sync, so
+    /// NO realized loss is recorded — the sale proceeds already landed on-chain.
+    /// </summary>
+    public void CloseExternalPosition(string conditionId)
+    {
+        var pos = Positions.FirstOrDefault(p => p.ConditionId == conditionId);
+        if (pos is null) return;
+        _recentlyClosed[conditionId] = DateTimeOffset.UtcNow;
+        Positions = Positions.Where(p => p.ConditionId != conditionId).ToList();
+        _log.LogWarning(
+            "External close detected for {Question} (${Cost:F2} cost basis removed; realized PnL NOT adjusted — verify bankroll after next on-chain sync)",
+            Truncate(pos.Question, 40), pos.SizeUsd);
+    }
+
     public void ResetDaily(string? trackingDate = null)
     {
         DailyStartValue = Equity();

@@ -160,6 +160,7 @@ function t(key, ...args) {
 }
 
 function applyLang() {
+  document.documentElement.lang = currentLang
   document.querySelectorAll('[data-i18n]').forEach(el => {
     const key = el.dataset.i18n
     const val = t(key)
@@ -408,7 +409,7 @@ function initNotificationCenter() {
 // ── Boot ──────────────────────────────────────────────────────────────────
 async function init() {
   _settings = (await api.readSettings()) || {}
-  currentLang = getSetting('lang', 'ru')
+  currentLang = getSetting('lang', 'ru') === 'en' ? 'en' : 'ru'
   historyMode = getSetting('history-mode', 'equity')
 
   const dataDir = await api.getDataDir()

@@ -438,31 +438,66 @@ while (!cts.Token.IsCancellationRequested)
                 var onChainBal = await clobClient.GetActualConditionalBalanceAsync(ghostPos.TokenId, cts.Token);
                 if (onChainBal is not null && onChainBal.Value < 0.1)
                 {
-                    log.LogWarning("  GHOST: {Question} (tracked={Tracked:F2} tokens, on-chain={OnChain:F2})",
-                        Truncate(ghostPos.Question, 50), ghostPos.Shares, onChainBal.Value);
-                    if (console_) Con($"  {YELLOW}GHOST: {Truncate(ghostPos.Question, 50)}... (no tokens, ${ghostPos.SizeUsd:F2} lost){RESET}");
-
-                    var ghostLoss = ghostPos.SizeUsd;
-                    var ghostPnl = portfolio.RemoveGhostPosition(ghostPos.ConditionId);
-
-                    var ghostTrade = new PolymarketBot.Models.Trade
+                    var pendingIntentForPosition = liveTrader?.HasPendingIntentFor(ghostPos.ConditionId) == true;
+                    if (pendingIntentForPosition)
                     {
-                        TradeId = Guid.NewGuid().ToString(),
-                        ConditionId = ghostPos.ConditionId,
-                        Question = ghostPos.Question,
-                        Side = ghostPos.Side,
-                        Action = PolymarketBot.Models.TradeAction.SELL,
-                        Price = 0.0,
-                        SizeUsd = ghostLoss,
-                        Shares = ghostPos.Shares,
-                        Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0,
-                        IsPaper = false,
-                        Rationale = "Ghost position: no on-chain tokens found",
-                        ExitReason = "ghost",
-                    };
-                    PersistenceService.AppendTrade(ghostTrade, config.DataDir);
-                    PersistenceService.SaveSnapshot(portfolio.Snapshot(), config.DataDir);
-                    notifier.NotifyGhostRemoved(ghostPos, ghostLoss, portfolio);
+                        // An unresolved order intent exists for this position and its
+                        // tokens are gone — the position was closed by the lost-response
+                        // order or manually on the website. Bankroll is corrected by the
+                        // on-chain sync; do NOT write a realized loss.
+                        log.LogWarning(
+                            "  EXTERNAL CLOSE: {Question} (tracked={Tracked:F2} tokens, on-chain={OnChain:F2}, unresolved order intent present) — removing position without writing a loss",
+                            Truncate(ghostPos.Question, 50), ghostPos.Shares, onChainBal.Value);
+                        if (console_) Con($"  {YELLOW}EXTERNAL CLOSE: {Truncate(ghostPos.Question, 50)}... (unresolved order intent; PnL not adjusted){RESET}");
+
+                        portfolio.CloseExternalPosition(ghostPos.ConditionId);
+                        var externalTrade = new PolymarketBot.Models.Trade
+                        {
+                            TradeId = Guid.NewGuid().ToString(),
+                            ConditionId = ghostPos.ConditionId,
+                            Question = ghostPos.Question,
+                            Side = ghostPos.Side,
+                            Action = PolymarketBot.Models.TradeAction.SELL,
+                            Price = 0.0,
+                            SizeUsd = 0.0,
+                            Shares = ghostPos.Shares,
+                            Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0,
+                            IsPaper = false,
+                            Rationale = "Position closed externally (bot POST lost or manual sell); bankroll corrected by on-chain sync",
+                            ExitReason = "external_close",
+                        };
+                        PersistenceService.AppendTrade(externalTrade, config.DataDir);
+                        PersistenceService.SaveSnapshot(portfolio.Snapshot(), config.DataDir);
+                        notifier.NotifyExternalClose(ghostPos, portfolio);
+                    }
+                    else
+                    {
+                        log.LogWarning("  GHOST: {Question} (tracked={Tracked:F2} tokens, on-chain={OnChain:F2})",
+                            Truncate(ghostPos.Question, 50), ghostPos.Shares, onChainBal.Value);
+                        if (console_) Con($"  {YELLOW}GHOST: {Truncate(ghostPos.Question, 50)}... (no tokens, ${ghostPos.SizeUsd:F2} lost){RESET}");
+
+                        var ghostLoss = ghostPos.SizeUsd;
+                        var ghostPnl = portfolio.RemoveGhostPosition(ghostPos.ConditionId);
+
+                        var ghostTrade = new PolymarketBot.Models.Trade
+                        {
+                            TradeId = Guid.NewGuid().ToString(),
+                            ConditionId = ghostPos.ConditionId,
+                            Question = ghostPos.Question,
+                            Side = ghostPos.Side,
+                            Action = PolymarketBot.Models.TradeAction.SELL,
+                            Price = 0.0,
+                            SizeUsd = ghostLoss,
+                            Shares = ghostPos.Shares,
+                            Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0,
+                            IsPaper = false,
+                            Rationale = "Ghost position: no on-chain tokens found",
+                            ExitReason = "ghost",
+                        };
+                        PersistenceService.AppendTrade(ghostTrade, config.DataDir);
+                        PersistenceService.SaveSnapshot(portfolio.Snapshot(), config.DataDir);
+                        notifier.NotifyGhostRemoved(ghostPos, ghostLoss, portfolio);
+                    }
                 }
             }
         }
@@ -619,6 +654,14 @@ while (!cts.Token.IsCancellationRequested)
                 Con($"    {es.Position.EntryPrice:F4} -> {es.CurrentPrice:F4} PnL={es.PnlPct:+0.0%;-0.0%}");
             }
 
+            if (liveTrader is { HasUncertainIntents: true })
+            {
+                log.LogError("Skipping SELL — an earlier live order returned an unknown outcome; resolve pending-orders.json before continuing");
+                Con($"{RED}SELL BLOCKED: unresolved live order intent; refusing to send new orders{RESET}");
+                notifier.NotifySellFail(es.Position, es.ExitReason, "blocked: unresolved live order intent from a previous unknown-outcome POST");
+                continue;
+            }
+
             var sellTrade = await trader.ExecuteSellAsync(es, portfolio, cts.Token);
             if (sellTrade is not null)
             {
@@ -694,6 +737,14 @@ while (!cts.Token.IsCancellationRequested)
             {
                 Con($"  TOPUP ({tc.ExitReason}): {Truncate(tc.Position.Question, 40)}...");
                 Con($"    {tc.Position.Shares:F2} tokens + buy 5 @ VWAP {tc.BuyVwap:F4} (cost=${tc.TopupCost:F2})");
+            }
+
+            if (liveTrader is { HasUncertainIntents: true })
+            {
+                log.LogError("Skipping TOPUP+SELL — an earlier live order returned an unknown outcome; resolve pending-orders.json before continuing");
+                Con($"{RED}TOPUP BLOCKED: unresolved live order intent; refusing to send new orders{RESET}");
+                notifier.NotifyTopupSellFail(tc, "blocked: unresolved live order intent from a previous unknown-outcome POST");
+                continue;
             }
 
             var topupTrade = await trader.ExecuteTopupAndSellAsync(tc, portfolio, cts.Token);
@@ -797,6 +848,9 @@ while (!cts.Token.IsCancellationRequested)
         else
         {
 
+        if (liveTrader is { HasUncertainIntents: true })
+            log.LogWarning(
+                "Market scan proceeds but all new evaluations will be skipped — an earlier live order returned an unknown outcome; resolve pending-orders.json");
         log.LogInformation("Scanning markets...");
         Con("SCAN: fetching markets...");
         var markets = await scanner.ScanAsync(cts.Token);
@@ -842,6 +896,19 @@ while (!cts.Token.IsCancellationRequested)
             // Skip estimation entirely if at exposure limit (saves API costs)
             if (atCapacity)
                 continue;
+
+            // Deterministic guardrail: never pay for AI estimates while an earlier
+            // live order has an unknown outcome (Reddit principle: LLM reasoning
+            // inside deterministic guardrails).
+            if (liveTrader is { HasUncertainIntents: true })
+            {
+                if (i == 0)
+                {
+                    log.LogWarning("Skipping all new evaluations — unresolved live order intent; refusing to pay for AI estimates");
+                    Con($"{YELLOW}EVAL SKIPPED: unresolved live order intent; not paying for AI estimates{RESET}");
+                }
+                break;
+            }
 
             if (config.LlmCostTrackingEnabled)
             {
@@ -1019,6 +1086,14 @@ while (!cts.Token.IsCancellationRequested)
             {
                 Con($"  {idx} -> {estimate.FairProbability:P0} edge={signal.Edge:P1}");
                 Con($"  {idx} >>> BUY {signal.Side} ${signal.PositionSizeUsd:F2} @ VWAP {signal.ExecutionPrice:F3}...");
+            }
+
+            if (liveTrader is { HasUncertainIntents: true })
+            {
+                log.LogError("Skipping BUY — an earlier live order returned an unknown outcome; resolve pending-orders.json before continuing");
+                Con($"{RED}BUY BLOCKED: unresolved live order intent; refusing to send new orders{RESET}");
+                notifier.NotifyBuyFail(signal.Market, signal, "blocked: unresolved live order intent from a previous unknown-outcome POST");
+                continue;
             }
 
             var trade = await trader.ExecuteAsync(signal, portfolio, cts.Token);

@@ -40,6 +40,19 @@ async function run() {
   await win.loadFile(path.join(__dirname, 'index.html'))
   await new Promise(resolve => setTimeout(resolve, 500))
 
+  const initialLanguage = await win.webContents.executeJavaScript('document.documentElement.lang')
+  assert.strictEqual(initialLanguage, 'ru')
+  await win.webContents.executeJavaScript(`document.getElementById('btn-lang').click()`)
+  assert.strictEqual(await win.webContents.executeJavaScript('document.documentElement.lang'), 'en')
+  await win.webContents.executeJavaScript(`document.getElementById('btn-lang').click()`)
+  assert.strictEqual(await win.webContents.executeJavaScript('document.documentElement.lang'), 'ru')
+  const logLayout = await win.webContents.executeJavaScript(`(() => {
+    const header = document.querySelector('.log-card .card-header').getBoundingClientRect()
+    const clear = document.getElementById('btn-clear-log').getBoundingClientRect()
+    return { headerRight: header.right, clearRight: clear.right }
+  })()`)
+  assert(logLayout.clearRight <= logLayout.headerRight, `log controls overflow: ${JSON.stringify(logLayout)}`)
+
   const now = new Date().toISOString()
   win.webContents.send('bot-output', { timestamp: now, level: 'INFO', message: 'TRADE OK: YES Test market $5.00' })
   await new Promise(resolve => setTimeout(resolve, 100))

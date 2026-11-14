@@ -430,6 +430,113 @@ class ReliabilityTests(unittest.TestCase):
             self.assertEqual(order.metadata, "0x" + "0" * 64)
             self.assertEqual(order.builder, "0x" + "0" * 64)
 
+    def test_recovery_with_lost_post_closes_intent_when_tokens_vanish(self):
+        from models import Position, Side as ModelSide
+
+        with tempfile.TemporaryDirectory() as directory:
+            portfolio = Portfolio(BotConfig(initial_bankroll=10))
+            portfolio.open_position(Position(
+                condition_id="manual-sell", question="Manual sell", side=ModelSide.NO,
+                token_id="tok-manual", entry_price=.76, size_usd=4.15, shares=5.46,
+                current_price=.92, unrealized_pnl=.87, category="x",
+            ))
+            trader = LiveTrader.__new__(LiveTrader)
+            trader.journal = OrderJournal(directory)
+            trader.journal.begin({
+                "kind": "SELL", "condition_id": "manual-sell", "side": "NO",
+                "token_id": "tok-manual", "requested": 5.46, "limit_price": .92,
+            })
+            calls = []
+            trader._get_actual_conditional_balance = lambda token_id: calls.append(token_id) or 0.0
+            pnl_before = portfolio.total_realized_pnl
+
+            self.assertTrue(trader.recover_pending_orders(portfolio))
+            self.assertEqual(trader.journal.pending(), [])
+            self.assertEqual(portfolio.positions, [])
+            self.assertEqual(calls, ["tok-manual"])
+            self.assertAlmostEqual(portfolio.total_realized_pnl, pnl_before)
+
+    def test_recovery_with_lost_post_blocks_when_tokens_still_on_chain(self):
+        from models import Position, Side as ModelSide
+
+        with tempfile.TemporaryDirectory() as directory:
+            portfolio = Portfolio(BotConfig(initial_bankroll=10))
+            portfolio.open_position(Position(
+                condition_id="still-open", question="Still open", side=ModelSide.NO,
+                token_id="tok-live", entry_price=.5, size_usd=5, shares=10,
+                current_price=.5, unrealized_pnl=0, category="x",
+            ))
+            trader = LiveTrader.__new__(LiveTrader)
+            trader.journal = OrderJournal(directory)
+            trader.journal.begin({
+                "kind": "SELL", "condition_id": "still-open", "side": "NO",
+                "token_id": "tok-live", "requested": 10, "limit_price": .5,
+            })
+            trader._get_actual_conditional_balance = lambda token_id: 9.5
+
+            self.assertFalse(trader.recover_pending_orders(portfolio))
+            self.assertEqual(len(trader.journal.pending()), 1)
+            self.assertEqual(len(portfolio.positions), 1)
+
+    def test_recovery_closes_intent_with_order_id_when_position_gone(self):
+        from models import Side as ModelSide
+
+        with tempfile.TemporaryDirectory() as directory:
+            portfolio = Portfolio(BotConfig(initial_bankroll=10))
+            trader = LiveTrader.__new__(LiveTrader)
+            trader.journal = OrderJournal(directory)
+            trader.journal.begin({
+                "kind": "SELL", "condition_id": "gone", "side": "NO",
+                "token_id": "tok-gone", "requested": 5.46, "limit_price": .92,
+                "order_id": "order-x",
+            })
+            trader._get_actual_conditional_balance = lambda token_id: 0.0
+
+            self.assertTrue(trader.recover_pending_orders(portfolio))
+            self.assertEqual(trader.journal.pending(), [])
+            self.assertEqual(portfolio.positions, [])
+
+    def test_uncertain_gate_blocks_new_orders(self):
+        from models import ExitSignal, Position, Side as ModelSide
+
+        trader = LiveTrader.__new__(LiveTrader)
+        trader.has_uncertain_intents = True
+        pos = Position(
+            condition_id="p", question="P", side=ModelSide.NO, token_id="t",
+            entry_price=.5, size_usd=5, shares=10, current_price=.5,
+            unrealized_pnl=0, category="x",
+        )
+        es = ExitSignal(position=pos, exit_reason="edge_gone", current_price=.5, unrealized_pnl=0, pnl_pct=0)
+        self.assertIsNone(trader.execute_sell(es, Portfolio(BotConfig())))
+        trader.has_uncertain_intents = False
+        # Without the flag the sell proceeds past the gate (fails later on book depth).
+        self.assertIsNone(trader.execute_sell(es, Portfolio(BotConfig())))
+
+    def test_external_close_and_ghost_accounting(self):
+        from models import Position, Side as ModelSide
+
+        portfolio = Portfolio(BotConfig(initial_bankroll=10))
+        portfolio.open_position(Position(
+            condition_id="ext", question="Ext", side=ModelSide.NO, token_id="t1",
+            entry_price=.76, size_usd=4.15, shares=5.46, current_price=.92,
+            unrealized_pnl=.87, category="x",
+        ))
+        pnl_before = portfolio.total_realized_pnl
+        bankroll_before = portfolio.bankroll
+        portfolio.close_external_position("ext")
+        self.assertEqual(portfolio.positions, [])
+        self.assertAlmostEqual(portfolio.total_realized_pnl, pnl_before)
+        self.assertAlmostEqual(portfolio.bankroll, bankroll_before)
+
+        portfolio.open_position(Position(
+            condition_id="ghost", question="Ghost", side=ModelSide.NO, token_id="t2",
+            entry_price=.5, size_usd=5, shares=10, current_price=.4,
+            unrealized_pnl=-1, category="x",
+        ))
+        portfolio.remove_ghost_position("ghost")
+        self.assertEqual(portfolio.positions, [])
+        self.assertAlmostEqual(portfolio.total_realized_pnl, pnl_before - 5)
+
 
 if __name__ == "__main__":
     unittest.main()

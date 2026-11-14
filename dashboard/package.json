@@ -6,7 +6,9 @@
   "scripts": {
     "postinstall": "install-electron",
     "start": "electron .",
-    "dev": "electron . --inspect"
+    "dev": "electron . --inspect",
+    "test": "node test-dashboard-model.js && node test-tail-lines.js && electron test-notification-center.js",
+    "test:vpn": "node test-vpn-runner.js"
   },
   "dependencies": {
     "chart.js": "4.4.0"
