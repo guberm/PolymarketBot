@@ -108,7 +108,7 @@ using var runLogScope = log.BeginScope(new Dictionary<string, object?> { ["run_i
 var mode = config.LiveTrading ? "LIVE" : "PAPER";
 log.LogInformation("Run {RunId} started", runId);
 log.LogInformation(new string('=', 60));
-log.LogInformation("Polymarket Bot (.NET)");
+log.LogInformation("Polymarket Bot (.NET) v{Version}", AppVersion.BotVersion);
 log.LogInformation("Mode: {Mode} | Config bankroll: ${Bankroll:F2}", mode, config.InitialBankroll);
 log.LogInformation("Min edge: {MinEdge:P0} + {Multiplier:G}x std | Max position: {MaxPos:P0}",
     config.MinEdge, config.UncertaintyEdgeMultiplier, EffectiveMaxPositionPct(config));
@@ -1294,4 +1294,10 @@ static MarketInfo BuildReviewMarket(Position pos)
         EventTitle = string.IsNullOrWhiteSpace(pos.EventTitle) ? pos.Question : pos.EventTitle,
         Description = "Position review re-estimate before stop-loss exit.",
     };
+}
+
+// Single source of truth for the release version printed at startup; bump together with the git tag.
+internal static class AppVersion
+{
+    public const string BotVersion = "1.7.0";
 }

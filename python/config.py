@@ -6,6 +6,9 @@ Priority (highest wins):
   3. Code defaults
 """
 
+# Release version printed in the startup banner; bump together with the git tag.
+BOT_VERSION = "1.7.0"
+
 import json
 import os
 from dataclasses import dataclass

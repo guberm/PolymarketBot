@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 
 from uuid import uuid4
 
-from config import BotConfig
+from config import BOT_VERSION, BotConfig
 from logger_setup import setup_logging
 from market_scanner import MarketScanner
 from estimator import Estimator
@@ -156,7 +156,7 @@ def main():
 
     mode = "LIVE" if config.live_trading else "PAPER"
     log.info("=" * 60)
-    log.info("Polymarket Bot")
+    log.info(f"Polymarket Bot v{BOT_VERSION}")
     log.info(f"Run {run_id} started")
     log.info(f"Mode: {mode} | Bankroll: ${config.initial_bankroll:.2f}")
     log.info(
