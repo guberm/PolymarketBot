@@ -14,6 +14,45 @@ static void Near(double expected, double actual, double tolerance = 1e-9)
         throw new Exception($"Expected {expected}, got {actual}");
 }
 
+using var signalLoggerFactory = LoggerFactory.Create(_ => { });
+var uncertaintyPortfolio = new Portfolio(new BotConfig
+{
+    InitialBankroll = 100,
+    MinEdge = .05,
+    EntryPriceBuffer = 0,
+    UncertaintyEdgeMultiplier = 1,
+}, signalLoggerFactory.CreateLogger<Portfolio>());
+var uncertaintyMarket = new MarketInfo
+{
+    ConditionId = "uncertain", Question = "Uncertain?", Slug = "uncertain",
+    TokenIdYes = "yes", TokenIdNo = "no", OutcomeYesPrice = .50, OutcomeNoPrice = .50,
+};
+var uncertaintyEstimate = new Estimate
+{
+    MarketConditionId = "uncertain", Question = "Uncertain?", FairProbability = .60,
+    RawEstimates = [.53, .67], Confidence = .07,
+};
+if (uncertaintyPortfolio.GenerateSignal(uncertaintyMarket, uncertaintyEstimate) is not null)
+    throw new Exception("Edge smaller than estimate uncertainty must be rejected");
+var conservativePortfolio = new Portfolio(new BotConfig
+{
+    InitialBankroll = 100,
+    MinEdge = .05,
+    EntryPriceBuffer = 0,
+    UncertaintyEdgeMultiplier = 1,
+    KellyFraction = 1,
+    MaxPositionPct = 1,
+}, signalLoggerFactory.CreateLogger<Portfolio>());
+var conservativeEstimate = new Estimate
+{
+    MarketConditionId = "uncertain", Question = "Uncertain?", FairProbability = .80,
+    RawEstimates = [.75, .85], Confidence = .05,
+};
+var conservativeSignal = conservativePortfolio.GenerateSignal(uncertaintyMarket, conservativeEstimate)
+    ?? throw new Exception("Conservative edge should still produce a signal");
+Near(.25, conservativeSignal.Edge);
+Near(50, conservativeSignal.PositionSizeUsd);
+
 var buy = ExecutionPricing.CalculateBuy(
     [new BookLevel(0.50, 10), new BookLevel(0.40, 10)], 6.0);
 if (!buy.Complete) throw new Exception("Expected complete BUY quote");

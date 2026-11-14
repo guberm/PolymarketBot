@@ -110,7 +110,8 @@ log.LogInformation("Run {RunId} started", runId);
 log.LogInformation(new string('=', 60));
 log.LogInformation("Polymarket Bot (.NET)");
 log.LogInformation("Mode: {Mode} | Config bankroll: ${Bankroll:F2}", mode, config.InitialBankroll);
-log.LogInformation("Min edge: {MinEdge:P0} | Max position: {MaxPos:P0}", config.MinEdge, EffectiveMaxPositionPct(config));
+log.LogInformation("Min edge: {MinEdge:P0} + {Multiplier:G}x std | Max position: {MaxPos:P0}",
+    config.MinEdge, config.UncertaintyEdgeMultiplier, EffectiveMaxPositionPct(config));
 log.LogInformation("Scan interval: {Interval} min | Markets/cycle: {Markets}",
     config.ScanIntervalMinutes, config.MarketsPerCycle);
 var _modeLabel = config.MultiProvider ? "multi" : config.AiProvider;
@@ -141,6 +142,7 @@ log.LogInformation(new string('=', 60));
     else
         log.LogInformation("  LLM costs:      off (budgets disabled)");
     log.LogInformation("  Min edge:       {E:P0}",  config.MinEdge);
+    log.LogInformation("  Uncertainty:    {M:G}x std dev", config.UncertaintyEdgeMultiplier);
     log.LogInformation("── RISK ─────────────────────────────────────────────────────");
     var effectiveKelly = EffectiveKellyFraction(config);
     var effectiveMaxPosition = EffectiveMaxPositionPct(config);
@@ -185,7 +187,8 @@ if (console_)
 {
     Console.WriteLine($"\n{new string('=', 60)}");
     Console.WriteLine($"  POLYMARKET BOT (.NET) — {mode} MODE");
-    Console.WriteLine($"  Config bankroll: ${config.InitialBankroll:F2} | Min edge: {config.MinEdge:P0}");
+    Console.WriteLine(
+        $"  Config bankroll: ${config.InitialBankroll:F2} | Min edge: {config.MinEdge:P0} + {config.UncertaintyEdgeMultiplier:G}x std");
     Console.WriteLine($"  Risk: {EffectiveMaxPositionPct(config):P0}/pos, {EffectiveMaxExposurePct(config):P0}/total, {EffectiveDailyStopLossPct(config):P0}/daily-SL");
     Console.WriteLine($"  Scan: every {config.ScanIntervalMinutes}min, {config.MarketsPerCycle} markets/cycle");
     Console.WriteLine($"{new string('=', 60)}\n");
@@ -992,7 +995,8 @@ while (!cts.Token.IsCancellationRequested)
             if (signal is null)
             {
                 var (yesEdge, noEdge) = CalculateNetEdges(market, estimate.FairProbability, config.EntryPriceBuffer);
-                var bestEdge = Math.Max(yesEdge, noEdge);
+                var uncertainty = Math.Max(0, estimate.Confidence * config.UncertaintyEdgeMultiplier);
+                var bestEdge = Math.Max(yesEdge, noEdge) - uncertainty;
 
                 if (bestEdge > config.MinEdge)
                 {
@@ -1010,8 +1014,8 @@ while (!cts.Token.IsCancellationRequested)
                 else
                 {
                     log.LogInformation(
-                        "  {Idx} SKIP (no net edge): fair={Fair:P1} vs market={Market:P1} (net_edge={Edge:+0.0%;-0.0%}, need>{Min:P0})",
-                        idx, estimate.FairProbability, market.OutcomeYesPrice, bestEdge, config.MinEdge);
+                        "  {Idx} SKIP (no conservative edge): fair={Fair:P1} vs market={Market:P1} (edge={Edge:+0.0%;-0.0%} after {Uncertainty:P1} uncertainty, need>{Min:P0})",
+                        idx, estimate.FairProbability, market.OutcomeYesPrice, bestEdge, uncertainty, config.MinEdge);
                     Con($"  {idx} -> {estimate.FairProbability:P0} (edge={bestEdge:+0.0%;-0.0%}) SKIP");
                 }
                 PersistenceService.AppendEstimateEvaluation(market, estimate, null,

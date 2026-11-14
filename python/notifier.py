@@ -224,6 +224,7 @@ class Notifier:
                     ("Ensemble size",  str(c.ensemble_size),       _DARK),
                     ("Temperature",    str(c.ensemble_temperature), _DARK),
                     ("Min edge",       f"{c.min_edge:.0%}",        _DARK),
+                    ("Uncertainty margin", f"{c.uncertainty_edge_multiplier:g} × std dev", _DARK),
                 ]},
                 {"title": "Risk limits", "rows": [
                     ("Max position",     f"{c.max_position_pct:.0%}",         _DARK),

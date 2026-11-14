@@ -89,6 +89,7 @@ public sealed class BotConfig
     // Sizing
     public double KellyFraction { get; init; } = 0.15;
     public double MinEdge { get; init; } = 0.12;
+    public double UncertaintyEdgeMultiplier { get; init; } = 1.0;
     public double MinTradeUsd { get; init; } = 0.5;
     public double EntryPriceBuffer { get; init; } = 0.02;
     public double MaxQuoteAgeSeconds { get; init; } = 15.0;
@@ -235,6 +236,7 @@ public sealed class BotConfig
             CalibrationMaxProviderWeight = double.Parse(Cfg("calibration_max_provider_weight", "CALIBRATION_MAX_PROVIDER_WEIGHT", "0.60")),
             KellyFraction = double.Parse(Cfg("kelly_fraction", "KELLY_FRACTION", "0.15")),
             MinEdge = double.Parse(Cfg("min_edge", "MIN_EDGE", "0.12")),
+            UncertaintyEdgeMultiplier = double.Parse(Cfg("uncertainty_edge_multiplier", "UNCERTAINTY_EDGE_MULTIPLIER", "1.0")),
             MinTradeUsd = double.Parse(Cfg("min_trade_usd", "MIN_TRADE_USD", "0.5")),
             EntryPriceBuffer = double.Parse(Cfg("entry_price_buffer", "ENTRY_PRICE_BUFFER", "0.02")),
             MaxQuoteAgeSeconds = double.Parse(Cfg("max_quote_age_seconds", "MAX_QUOTE_AGE_SECONDS", "15")),

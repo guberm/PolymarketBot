@@ -26,6 +26,19 @@ class EvaluationMetricTests(unittest.TestCase):
         self.assertEqual(result["resolved_trades"], 1)
         self.assertGreater(result["realized_pnl"], 0)
 
+    def test_replay_rejects_edge_smaller_than_estimate_uncertainty(self):
+        rows = [
+            {"condition_id": "uncertain", "fair_probability": .60, "confidence": .07,
+             "market_yes_price": .50, "market_no_price": .50},
+        ]
+
+        result = replay(rows, ReplayConfig(
+            bankroll=100, min_edge=.05, entry_buffer=0,
+            uncertainty_edge_multiplier=1,
+        ))
+
+        self.assertEqual(result["trades"], 0)
+
     def test_brier_score(self):
         self.assertAlmostEqual(brier_score([0.8, 0.1], [1.0, 0.0]), 0.025)
 

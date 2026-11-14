@@ -130,6 +130,7 @@
   "____SECTION_SIZING____": "── Position sizing ───────────────────────────────────────────────────",
 
   "min_edge": 0.10,
+  "uncertainty_edge_multiplier": 1.0,
   "kelly_fraction": 0.20,
   "min_trade_usd": 0.5,
   "entry_price_buffer": 0.02,

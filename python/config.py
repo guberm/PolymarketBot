@@ -136,6 +136,7 @@ class BotConfig:
     # Sizing
     kelly_fraction: float = 0.15
     min_edge: float = 0.12
+    uncertainty_edge_multiplier: float = 1.0
     min_trade_usd: float = 0.5
     entry_price_buffer: float = 0.02
     max_quote_age_seconds: float = 15.0
@@ -276,6 +277,7 @@ class BotConfig:
             calibration_max_provider_weight=get("calibration_max_provider_weight", 0.60),
             kelly_fraction=get("kelly_fraction", 0.15),
             min_edge=get("min_edge", 0.12),
+            uncertainty_edge_multiplier=get("uncertainty_edge_multiplier", 1.0),
             min_trade_usd=get("min_trade_usd", 0.5),
             entry_price_buffer=get("entry_price_buffer", 0.02),
             max_quote_age_seconds=get("max_quote_age_seconds", 15.0),

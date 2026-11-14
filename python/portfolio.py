@@ -101,11 +101,12 @@ class Portfolio:
     def generate_signal(self, market: MarketInfo, estimate: Estimate) -> Optional[Signal]:
         """Compare estimate to market price, return Signal if edge exceeds threshold."""
         fair = estimate.fair_probability
+        uncertainty = max(0.0, estimate.confidence * self.config.uncertainty_edge_multiplier)
 
         yes_execution_price = self._estimate_buy_execution_price(market.outcome_yes_price)
         no_execution_price = self._estimate_buy_execution_price(market.outcome_no_price)
-        yes_edge = fair - yes_execution_price
-        no_edge = (1.0 - fair) - no_execution_price
+        yes_edge = fair - uncertainty - yes_execution_price
+        no_edge = (1.0 - fair) - uncertainty - no_execution_price
 
         if yes_edge > no_edge and yes_edge > self.config.min_edge:
             side = Side.YES
@@ -153,7 +154,8 @@ class Portfolio:
         size_cap_usd: Optional[float],
     ) -> Optional[Signal]:
         fair = estimate.fair_probability
-        fair_for_side = fair if side == Side.YES else 1.0 - fair
+        uncertainty = max(0.0, estimate.confidence * self.config.uncertainty_edge_multiplier)
+        fair_for_side = max(0.0, (fair if side == Side.YES else 1.0 - fair) - uncertainty)
         edge = fair_for_side - execution_price
         if edge <= self.config.min_edge:
             return None
@@ -163,7 +165,7 @@ class Portfolio:
 
         # Kelly criterion: f* = (b*p - q) / b
         b = (1.0 / execution_price) - 1.0  # decimal odds
-        p = fair if side == Side.YES else (1.0 - fair)
+        p = fair_for_side
         q = 1.0 - p
         kelly_raw = (b * p - q) / b if b > 0 else 0.0
         kelly_raw = max(0.0, kelly_raw)

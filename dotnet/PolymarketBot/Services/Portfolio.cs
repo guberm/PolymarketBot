@@ -114,10 +114,11 @@ public sealed class Portfolio
     public Signal? GenerateSignal(MarketInfo market, Estimate estimate)
     {
         var fair = estimate.FairProbability;
+        var uncertainty = Math.Max(0, estimate.Confidence * _config.UncertaintyEdgeMultiplier);
         var yesExecutionPrice = EstimateBuyExecutionPrice(market.OutcomeYesPrice);
         var noExecutionPrice = EstimateBuyExecutionPrice(market.OutcomeNoPrice);
-        var yesEdge = fair - yesExecutionPrice;
-        var noEdge = (1.0 - fair) - noExecutionPrice;
+        var yesEdge = fair - uncertainty - yesExecutionPrice;
+        var noEdge = (1.0 - fair) - uncertainty - noExecutionPrice;
 
         Side side;
         double marketPrice, executionPrice;
@@ -160,13 +161,14 @@ public sealed class Portfolio
         double? sizeCapUsd)
     {
         var fair = estimate.FairProbability;
-        var fairForSide = side == Side.YES ? fair : 1.0 - fair;
+        var uncertainty = Math.Max(0, estimate.Confidence * _config.UncertaintyEdgeMultiplier);
+        var fairForSide = Math.Max(0, (side == Side.YES ? fair : 1.0 - fair) - uncertainty);
         var edge = fairForSide - executionPrice;
         if (edge <= _config.MinEdge || executionPrice <= 0 || executionPrice >= 1) return null;
 
         // Kelly criterion: f* = (b*p - q) / b
         var b = (1.0 / executionPrice) - 1.0;
-        var p = side == Side.YES ? fair : 1.0 - fair;
+        var p = fairForSide;
         var q = 1.0 - p;
         var kellyRaw = b > 0 ? (b * p - q) / b : 0.0;
         kellyRaw = Math.Max(0.0, kellyRaw);

@@ -159,7 +159,10 @@ def main():
     log.info("Polymarket Bot")
     log.info(f"Run {run_id} started")
     log.info(f"Mode: {mode} | Bankroll: ${config.initial_bankroll:.2f}")
-    log.info(f"Min edge: {config.min_edge:.0%} | Max position: {effective_max_position_pct(config):.0%}")
+    log.info(
+        f"Min edge: {config.min_edge:.0%} + {config.uncertainty_edge_multiplier:g}x std "
+        f"| Max position: {effective_max_position_pct(config):.0%}"
+    )
     log.info(f"Scan interval: {config.scan_interval_minutes} min | Markets/cycle: {config.markets_per_cycle}")
     _mode_label = "multi" if config.multi_provider else config.ai_provider
     log.info(f"Ensemble: {config.ensemble_size}x [{_mode_label}]")
@@ -195,7 +198,10 @@ def main():
     if con:
         print(f"\n{'='*60}")
         print(f"  POLYMARKET BOT — {mode} MODE")
-        print(f"  Bankroll: ${config.initial_bankroll:.2f} | Min edge: {config.min_edge:.0%}")
+        print(
+            f"  Bankroll: ${config.initial_bankroll:.2f} | "
+            f"Min edge: {config.min_edge:.0%} + {config.uncertainty_edge_multiplier:g}x std"
+        )
         print(
             f"  Risk: {effective_max_position_pct(config):.0%}/pos, "
             f"{effective_max_exposure_pct(config):.0%}/total, "
@@ -871,11 +877,12 @@ def main():
                 signal_obj = portfolio.generate_signal(market, estimate)
                 if signal_obj is None:
                     yes_edge, no_edge = calculate_net_edges(market, estimate.fair_probability, config.entry_price_buffer)
-                    best_edge = max(yes_edge, no_edge)
+                    uncertainty = max(0.0, estimate.confidence * config.uncertainty_edge_multiplier)
+                    best_edge = max(yes_edge, no_edge) - uncertainty
                     log.info(
-                        f"  [{i}/{len(eligible)}] SKIP (no net edge): "
+                        f"  [{i}/{len(eligible)}] SKIP (no conservative edge): "
                         f"fair={estimate.fair_probability:.1%} vs market={market.outcome_yes_price:.1%} "
-                        f"(net_edge={best_edge:+.1%}, need>{config.min_edge:.0%})"
+                        f"(edge={best_edge:+.1%} after {uncertainty:.1%} uncertainty, need>{config.min_edge:.0%})"
                     )
                     if con:
                         print(f"[{ts()}]   [{i:>2}/{len(eligible)}] -> {estimate.fair_probability:.0%} (edge={best_edge:+.1%}) SKIP")

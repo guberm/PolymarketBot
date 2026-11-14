@@ -427,6 +427,7 @@ Azure also requires: `azure_openai_api_version` (default `2024-02-01`).
 | Key | Default | Description |
 |-----|---------|-------------|
 | `min_edge` | `0.12` | Minimum mispricing to trade |
+| `uncertainty_edge_multiplier` | `1.0` | Subtract this multiple of ensemble std dev from fair probability before edge and Kelly sizing |
 | `kelly_fraction` | `0.15` | Fractional Kelly multiplier |
 | `min_trade_usd` | `0.5` | Minimum position size |
 | `entry_price_buffer` | `0.02` | Conservative pre-book slippage used before the fresh VWAP quote |
@@ -497,9 +498,10 @@ The highest-scoring provider is marked `⭐` in the log. Final estimate = trimme
 ```text
 provisional_price = market_price + entry_price_buffer
 execution_price = full-size ask-book VWAP
-edge = fair_probability - execution_price
+conservative_probability = fair_probability - uncertainty_edge_multiplier × std_dev
+edge = conservative_probability - execution_price
 b = (1 - execution_price) / execution_price
-f* = (b × p - q) / b
+f* = (b × conservative_probability - (1 - conservative_probability)) / b
 bet = kelly_fraction × f* × portfolio_value
 ```
 

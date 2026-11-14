@@ -12,6 +12,7 @@ from pathlib import Path
 class ReplayConfig:
     bankroll: float = 100.0
     min_edge: float = 0.12
+    uncertainty_edge_multiplier: float = 1.0
     entry_buffer: float = 0.02
     kelly_fraction: float = 0.15
     max_position_pct: float = 0.15
@@ -55,12 +56,15 @@ def replay(rows: list[dict], config: ReplayConfig) -> dict:
             continue
 
         fair = float(row.get("fair_probability", 0.5))
+        uncertainty = max(0.0, float(row.get("confidence", 0)) * config.uncertainty_edge_multiplier)
         yes_price = min(float(row.get("market_yes_price", 0)) + config.entry_buffer, 0.99)
         no_price = min(float(row.get("market_no_price", 0)) + config.entry_buffer, 0.99)
-        yes_edge, no_edge = fair - yes_price, (1 - fair) - no_price
+        yes_probability = max(0.0, fair - uncertainty)
+        no_probability = max(0.0, 1 - fair - uncertainty)
+        yes_edge, no_edge = yes_probability - yes_price, no_probability - no_price
         side, price, probability, edge = (
-            ("YES", yes_price, fair, yes_edge)
-            if yes_edge > no_edge else ("NO", no_price, 1 - fair, no_edge)
+            ("YES", yes_price, yes_probability, yes_edge)
+            if yes_edge > no_edge else ("NO", no_price, no_probability, no_edge)
         )
         if edge <= config.min_edge or not 0 < price < 1:
             continue

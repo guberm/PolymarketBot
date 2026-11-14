@@ -2,7 +2,7 @@ import unittest
 
 from config import BotConfig
 from execution import BookLevel, calculate_buy_quote, calculate_buy_shares_quote, calculate_sell_quote
-from models import PortfolioSnapshot, Position, Side
+from models import Estimate, MarketInfo, PortfolioSnapshot, Position, Side
 from portfolio import Portfolio
 
 
@@ -42,6 +42,47 @@ class ExecutionPricingTests(unittest.TestCase):
         self.assertAlmostEqual(quote.filled_value, 8.5)
         self.assertAlmostEqual(quote.vwap, 8.5 / 15.0)
         self.assertAlmostEqual(quote.worst_price, 0.50)
+
+
+class SignalUncertaintyTests(unittest.TestCase):
+    @staticmethod
+    def _market() -> MarketInfo:
+        return MarketInfo(
+            condition_id="uncertain", question="Uncertain?", slug="uncertain",
+            outcome_yes_price=.50, outcome_no_price=.50,
+            token_id_yes="yes", token_id_no="no", liquidity=10_000,
+            volume=10_000, volume_24hr=1_000, best_bid=.49, best_ask=.50,
+            spread=.01, end_date="", category="test", event_title="test",
+            description="",
+        )
+
+    def test_edge_smaller_than_estimate_uncertainty_is_rejected(self):
+        portfolio = Portfolio(BotConfig(
+            initial_bankroll=100,
+            min_edge=.05,
+            entry_price_buffer=0,
+            uncertainty_edge_multiplier=1,
+        ))
+        estimate = Estimate("uncertain", "Uncertain?", .60, [.53, .67], .07, "")
+
+        self.assertIsNone(portfolio.generate_signal(self._market(), estimate))
+
+    def test_kelly_sizing_uses_conservative_probability(self):
+        portfolio = Portfolio(BotConfig(
+            initial_bankroll=100,
+            min_edge=.05,
+            entry_price_buffer=0,
+            uncertainty_edge_multiplier=1,
+            kelly_fraction=1,
+            max_position_pct=1,
+        ))
+        estimate = Estimate("uncertain", "Uncertain?", .80, [.75, .85], .05, "")
+
+        signal = portfolio.generate_signal(self._market(), estimate)
+
+        self.assertIsNotNone(signal)
+        self.assertAlmostEqual(signal.edge, .25)
+        self.assertAlmostEqual(signal.position_size_usd, 50)
 
 
 class LiquidationEquityTests(unittest.TestCase):

@@ -1370,6 +1370,7 @@ const CONFIG_SCHEMA = [
   { section: 'SIZING & RISK', ru: 'РАЗМЕРЫ И РИСКИ', fields: [
     { key: 'kelly_fraction',            label: 'Kelly Fraction',    ru: 'Доля Келли',           type: 'number', step: 0.05 },
     { key: 'min_edge',                  label: 'Min Edge',          ru: 'Мин. преимущество',    type: 'number', step: 0.01 },
+    { key: 'uncertainty_edge_multiplier', label: 'Uncertainty × Std Dev', ru: 'Запас × разброс', type: 'number', step: 0.1, default: 1.0 },
     { key: 'min_trade_usd',            label: 'Min Trade ($)',     ru: 'Мин. сделка ($)',      type: 'number', step: 0.1 },
     { key: 'entry_price_buffer',        label: 'Entry Buffer',      ru: 'Буфер входа',          type: 'number', step: 0.01 },
     { key: 'max_live_order_bankroll_pct', label: 'Max Live Order %', ru: 'Макс. live ордер %',   type: 'number', step: 0.05 },
