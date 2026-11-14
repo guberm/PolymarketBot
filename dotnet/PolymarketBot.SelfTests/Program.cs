@@ -661,12 +661,75 @@ ghostPortfolio.RemoveGhostPosition("true-ghost");
 if (Math.Abs(ghostPortfolio.TotalRealizedPnl - (-5)) > 1e-9)
     throw new Exception("Ghost removal must still write the full cost-basis loss");
 
+// Lost-response SELL recovery: a resting order must be swept, tokens-held means
+// no fill, the intent closes and the bot resumes.
+var recoveryDir = Path.Combine(Path.GetTempPath(), $"polymarket-recovery-{Guid.NewGuid()}");
+Directory.CreateDirectory(recoveryDir);
+var recoveryPortfolio = new Portfolio(new BotConfig { InitialBankroll = 10 }, loggerFactory.CreateLogger<Portfolio>());
+recoveryPortfolio.OpenPosition(new Position
+{
+    ConditionId = "rec", Question = "Rec", Side = Side.NO, TokenId = "tok-rec",
+    EntryPrice = .47, SizeUsd = 4.50, Shares = 9.58, CurrentPrice = .973, UnrealizedPnl = .48, Category = "x",
+});
+File.WriteAllText(Path.Combine(recoveryDir, "pending-orders.json"),
+    "{\"intent-1\":{\"intent_id\":\"intent-1\",\"kind\":\"SELL\",\"condition_id\":\"rec\",\"side\":\"NO\",\"token_id\":\"tok-rec\",\"requested\":9.58,\"limit_price\":0.973,\"created_at\":1}}");
+var recoveryHandler = new LostResponseOrderHandler();
+using (var recoveryHttp = new HttpClient(recoveryHandler))
+{
+    var recClob = new ClobApiClient(new BotConfig
+    {
+        ClobHost = "https://clob.test",
+        PolymarketPrivateKey = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
+        PolymarketChainId = 137,
+        PolymarketSignatureType = 1,
+        PolymarketApiKey = "owner",
+        PolymarketApiSecret = "dGVzdA==",
+        PolymarketApiPassphrase = "pass",
+    }, recoveryHttp, loggerFactory.CreateLogger<ClobApiClient>());
+    var recTrader = new LiveTrader(recClob, loggerFactory.CreateLogger<LiveTrader>(), recoveryDir);
+    if (!await recTrader.RecoverPendingOrdersAsync(recoveryPortfolio, recoveryDir, CancellationToken.None))
+        throw new Exception("Recovery must resolve a lost-response SELL with tokens held after sweeping resting orders");
+    if (new OrderJournal(recoveryDir).Pending().Count != 0)
+        throw new Exception("Recovered intent was not closed");
+    if (recoveryPortfolio.Positions.Count != 1)
+        throw new Exception("Tokens-held recovery must keep the tracked position");
+    if (!recoveryHandler.Cancelled) throw new Exception("Resting order was not cancelled");
+}
+Directory.Delete(recoveryDir, true);
+
 Console.WriteLine("Self-tests passed");
 
 sealed class StaticResponseHandler(string body) : HttpMessageHandler
 {
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(body) });
+}
+
+// Serves the endpoints touched while recovering a lost-response SELL intent:
+// on-chain balance probes, open-order sweep and order cancellation.
+sealed class LostResponseOrderHandler : HttpMessageHandler
+{
+    public bool Cancelled { get; private set; }
+
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        var path = request.RequestUri!.AbsolutePath;
+        if (path == "/balance-allowance/update") return Json("{}");
+        if (path == "/balance-allowance") return Json("""{"balance":"9580000"}""");
+        if (path == "/data/orders")
+            return Json("""{"data":[{"id":"resting-1","status":"LIVE","side":"SELL"}],"next_cursor":"LTE="}""");
+        if (path == "/order" && request.Method == HttpMethod.Delete)
+        {
+            Cancelled = true;
+            return Json("""{"canceled":"resting-1"}""");
+        }
+        return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
+    }
+
+    private static Task<HttpResponseMessage> Json(string body) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+    {
+        Content = new StringContent(body, System.Text.Encoding.UTF8, "application/json")
+    });
 }
 
 sealed class WeatherMergeHandler : HttpMessageHandler

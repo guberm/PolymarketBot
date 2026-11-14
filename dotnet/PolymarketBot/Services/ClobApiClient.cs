@@ -344,7 +344,7 @@ public sealed class ClobApiClient
         int decimals = GetDecimals(tickSize);
 
         _log.LogInformation("[SELL-META] token={Token} tickSize={Tick} negRisk={NegRisk} signatureType={SigType} funder={Funder}",
-            tokenId[..12], tickSize, negRisk, _signatureType, _funderAddress[..10]);
+            tokenId[..Math.Min(tokenId.Length, 12)], tickSize, negRisk, _signatureType, _funderAddress[..Math.Min(_funderAddress.Length, 10)]);
 
         double tickSizeD = double.Parse(tickSize, CultureInfo.InvariantCulture);
 
@@ -533,12 +533,44 @@ public sealed class ClobApiClient
             var resp = await _http.SendAsync(req, ct);
             var respText = await resp.Content.ReadAsStringAsync(ct);
             _log.LogInformation("Cancel order {OrderId}: {Status} {Body}",
-                orderId[..12], resp.StatusCode, respText[..Math.Min(respText.Length, 100)]);
+                orderId[..Math.Min(orderId.Length, 12)], resp.StatusCode, respText[..Math.Min(respText.Length, 100)]);
         }
         catch (Exception ex)
         {
             _log.LogWarning("Cancel order error: {Error}", ex.Message);
         }
+    }
+
+    /// <summary>
+    /// List open (resting) order ids for one outcome token via L2-authenticated
+    /// GET /data/orders. Used by startup recovery to cancel orders left behind by
+    /// lost-response POSTs whose order id was never received.
+    /// </summary>
+    public async Task<List<string>> GetOpenOrderIdsForTokenAsync(string tokenId, CancellationToken ct)
+    {
+        var path = "/data/orders";
+        var url = $"{_host}{path}?asset_id={Uri.EscapeDataString(tokenId)}";
+        var req = new HttpRequestMessage(HttpMethod.Get, url);
+        foreach (var h in BuildL2Headers("GET", path)) req.Headers.TryAddWithoutValidation(h.Key, h.Value);
+
+        var resp = await _http.SendAsync(req, ct);
+        var respText = await resp.Content.ReadAsStringAsync(ct);
+        if (!resp.IsSuccessStatusCode)
+            throw new HttpRequestException(
+                $"open orders fetch failed: {resp.StatusCode} {respText[..Math.Min(respText.Length, 120)]}");
+
+        var ids = new List<string>();
+        using var doc = JsonDocument.Parse(respText);
+        if (doc.RootElement.TryGetProperty("data", out var dataEl) && dataEl.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var el in dataEl.EnumerateArray())
+            {
+                if (el.TryGetProperty("id", out var idEl) && idEl.GetString() is { Length: > 0 } id)
+                    ids.Add(id);
+            }
+        }
+        _log.LogInformation("Open orders for {Token}: {Count}", tokenId[..Math.Min(tokenId.Length, 12)], ids.Count);
+        return ids;
     }
 
     // ── Balance query ──────────────────────────────────────────────
@@ -568,7 +600,7 @@ public sealed class ClobApiClient
             if (!updateResp.IsSuccessStatusCode)
             {
                 var updateBody = await updateResp.Content.ReadAsStringAsync(ct);
-                _log.LogWarning("[COND-UPDATE] {Token} failed {Status}: {Body}", tokenId[..12], updateResp.StatusCode, updateBody[..Math.Min(updateBody.Length, 200)]);
+                _log.LogWarning("[COND-UPDATE] {Token} failed {Status}: {Body}", tokenId[..Math.Min(tokenId.Length, 12)], updateResp.StatusCode, updateBody[..Math.Min(updateBody.Length, 200)]);
             }
 
             // Step 2: GET /balance-allowance to read actual conditional token balance
@@ -581,22 +613,22 @@ public sealed class ClobApiClient
             var readBody = await readResp.Content.ReadAsStringAsync(ct);
 
             // Balance is in 6-decimal units (same as USDC), e.g. "7290000" = 7.29 tokens
-            _log.LogDebug("[COND-BALANCE-RAW] {Token}: {Body}", tokenId[..12], readBody[..Math.Min(readBody.Length, 300)]);
+            _log.LogDebug("[COND-BALANCE-RAW] {Token}: {Body}", tokenId[..Math.Min(tokenId.Length, 12)], readBody[..Math.Min(readBody.Length, 300)]);
             var doc = JsonDocument.Parse(readBody);
             if (doc.RootElement.TryGetProperty("balance", out var balEl) &&
                 long.TryParse(balEl.GetString(), out var balRaw))
             {
                 double balance = balRaw / 1_000_000.0;
-                _log.LogInformation("[COND-BALANCE] {Token}: {Balance:F2} tokens", tokenId[..12], balance);
+                _log.LogInformation("[COND-BALANCE] {Token}: {Balance:F2} tokens", tokenId[..Math.Min(tokenId.Length, 12)], balance);
                 return balance;
             }
 
-            _log.LogWarning("[COND-BALANCE] {Token}: could not parse balance from: {Body}", tokenId[..12], readBody[..Math.Min(readBody.Length, 200)]);
+            _log.LogWarning("[COND-BALANCE] {Token}: could not parse balance from: {Body}", tokenId[..Math.Min(tokenId.Length, 12)], readBody[..Math.Min(readBody.Length, 200)]);
             return null;
         }
         catch (Exception ex)
         {
-            _log.LogWarning("[COND-BALANCE] error for {Token}: {Error}", tokenId[..12], ex.Message);
+            _log.LogWarning("[COND-BALANCE] error for {Token}: {Error}", tokenId[..Math.Min(tokenId.Length, 12)], ex.Message);
             return null;
         }
     }

@@ -161,6 +161,22 @@ class LiveTrader:
             if portfolio.has_applied_order(record.get("order_id", "")):
                 self.journal.complete(record["intent_id"])
 
+    def _cancel_resting_orders(self, token_id: str) -> None:
+        """Cancel any resting CLOB order for this token left by a lost-response POST.
+
+        The response of a POST /order can be lost after the server accepted it, so
+        a GTC order may be resting without the bot knowing its id. Recovery sweeps
+        the token's open orders and cancels them before reconciling on-chain state.
+        """
+        from py_clob_client_v2.client import OpenOrderParams
+        orders = self.client.get_open_orders(OpenOrderParams(asset_id=token_id), only_first_page=True)
+        ids = [o.get("id") for o in orders if isinstance(o, dict) and o.get("id")]
+        if not ids:
+            log.info(f"Open orders for {token_id[:12]}: 0")
+            return
+        log.warning(f"Cancelling {len(ids)} resting order(s) left by a lost-response intent")
+        self.client.cancel_orders(ids)
+
     def recover_pending_orders(self, portfolio: Portfolio) -> bool:
         """Cancel/reconcile durable intents and apply fills exactly once before live trading resumes."""
         from persistence import append_trade, save_snapshot
@@ -204,28 +220,60 @@ class LiveTrader:
                     save_snapshot(portfolio.snapshot(), data_dir)
                 continue
             if not order_id:
-                # POST response was lost; reconcile against on-chain token balance.
-                # Vanished tokens mean the order executed (or the position closed
-                # externally) — apply it and resume. Tokens still held mean the
-                # order may still be live server-side and needs a human check.
+                # The POST response was lost: the order may still be resting on the
+                # CLOB even though we never saw its id. Cancel any resting order for
+                # this token first, then reconcile against the on-chain balance.
+                sweep_ok = True
+                try:
+                    self._cancel_resting_orders(record.get("token_id", ""))
+                except Exception as exc:
+                    sweep_ok = False
+                    log.warning(
+                        f"Could not enumerate/cancel resting orders for "
+                        f"{record.get('token_id', '')[:16]}: {exc}"
+                    )
+
                 on_chain = on_chain_probe
-                if on_chain is None or on_chain >= 0.1:
+                if on_chain is not None and on_chain < 0.1:
+                    log.warning(
+                        f"Uncertain live order intent {intent_id}: tokens for "
+                        f"{record.get('token_id', '')} are gone on-chain; "
+                        "closing intent and removing tracked position without writing a loss"
+                    )
+                    self.journal.complete(intent_id)
+                    vanished = next(
+                        (p for p in portfolio.positions if p.token_id == record.get("token_id", "")), None
+                    )
+                    if vanished is not None:
+                        portfolio.close_external_position(vanished.condition_id)
+                    continue
+                if not sweep_ok:
                     log.critical(
-                        f"Uncertain live order intent {intent_id}: POST outcome unknown and token "
-                        f"{record.get('token_id', '')} still on-chain ({on_chain if on_chain is not None else 'unknown'}) — "
-                        "refusing live trading until pending-orders.json is reconciled manually"
+                        f"Uncertain live order intent {intent_id}: POST outcome unknown, token "
+                        f"{record.get('token_id', '')} still on-chain "
+                        f"({on_chain if on_chain is not None else 'unknown'}), and the resting-order "
+                        "check failed — refusing live trading. Check Open Orders on polymarket.com "
+                        "for this market, cancel any open order, then remove the intent from "
+                        "pending-orders.json"
                     )
                     return False
+                # Sweep succeeded: nothing is resting server-side anymore. Tokens still
+                # held mean the order never (fully) filled — a fill would have moved them.
+                remaining = on_chain if on_chain is not None else 0.0
+                if ("SELL" in record.get("kind", "")
+                        and 0.1 < remaining < record.get("requested", 0) - 0.1):
+                    filled = record.get("requested", 0) - remaining
+                    log.warning(
+                        f"Lost-response SELL intent {intent_id} partially filled for "
+                        f"{filled:.4f} shares; syncing tracked position"
+                    )
+                    portfolio.reduce_position(record["condition_id"], filled, record.get("limit_price", 0))
+                    save_snapshot(portfolio.snapshot(), data_dir)
                 log.warning(
-                    f"Uncertain live order intent {intent_id}: tokens for {record.get('token_id', '')} are gone on-chain; "
-                    "closing intent and removing tracked position without writing a loss"
+                    f"Uncertain live order intent {intent_id}: no resting order and no fill "
+                    f"(tokens={remaining:.4f}); closing intent and resuming"
                 )
                 self.journal.complete(intent_id)
-                vanished = next(
-                    (p for p in portfolio.positions if p.token_id == record.get("token_id", "")), None
-                )
-                if vanished is not None:
-                    portfolio.close_external_position(vanished.condition_id)
                 continue
 
             fill = None

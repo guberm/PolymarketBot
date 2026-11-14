@@ -87,25 +87,64 @@ public sealed class LiveTrader : ITrader
             }
             if (string.IsNullOrEmpty(record.OrderId))
             {
-                // POST response was lost; reconcile against on-chain token balance.
-                // Vanished tokens mean the order executed (or the position closed
-                // externally) — apply it and resume. Tokens still held mean the
-                // order may still be live server-side and needs a human check.
+                // The POST response was lost: the order may still be resting on the
+                // CLOB even though we never saw its id. Cancel any resting order for
+                // this token first, then reconcile against the on-chain balance.
+                var sweepOk = true;
+                try
+                {
+                    foreach (var openId in await _clob.GetOpenOrderIdsForTokenAsync(record.TokenId, ct))
+                    {
+                        _log.LogWarning(
+                            "Cancelling resting order {OrderId} left by lost-response intent {Intent}",
+                            openId[..Math.Min(openId.Length, 16)], record.IntentId);
+                        await _clob.CancelOrderAsync(openId, ct);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    sweepOk = false;
+                    _log.LogWarning(
+                        "Could not enumerate/cancel resting orders for {Token}: {Error}",
+                        record.TokenId[..Math.Min(record.TokenId.Length, 16)], ex.Message);
+                }
+
                 var onChain = onChainProbe;
-                if (onChain is null || onChain.Value >= 0.1)
+                if (onChain is not null && onChain.Value < 0.1)
+                {
+                    _log.LogWarning(
+                        "Uncertain live order intent {Intent}: tokens for {Token} are gone on-chain; closing intent and removing tracked position without writing a loss",
+                        record.IntentId, record.TokenId);
+                    _journal.Complete(record.IntentId);
+                    var vanished = portfolio.Positions.FirstOrDefault(p => p.TokenId == record.TokenId);
+                    if (vanished is not null)
+                        portfolio.CloseExternalPosition(vanished.ConditionId);
+                    continue;
+                }
+                if (!sweepOk)
                 {
                     _log.LogCritical(
-                        "Uncertain live order intent {Intent}: POST outcome unknown and token {Token} still on-chain ({Balance}) — refusing live trading until pending-orders.json is reconciled manually",
+                        "Uncertain live order intent {Intent}: POST outcome unknown, token {Token} still on-chain ({Balance}), and the resting-order check failed — refusing live trading. Check Open Orders on polymarket.com for this market, cancel any open order, then remove the intent from pending-orders.json",
                         record.IntentId, record.TokenId, onChain?.ToString("F4") ?? "unknown");
                     return false;
                 }
+                // Sweep succeeded: nothing is resting server-side anymore. Tokens still
+                // held mean the order never (fully) filled — a fill would have moved them.
+                var remaining = onChain ?? 0.0;
+                if (record.Kind.Contains("SELL", StringComparison.Ordinal)
+                    && remaining > 0.1 && remaining < record.Requested - 0.1)
+                {
+                    var filled = record.Requested - remaining;
+                    _log.LogWarning(
+                        "Lost-response SELL intent {Intent} partially filled for {Filled:F4} shares; syncing tracked position",
+                        record.IntentId, filled);
+                    portfolio.ReducePosition(record.ConditionId, filled, record.LimitPrice);
+                    PersistenceService.SaveSnapshot(portfolio.Snapshot(), dataDir);
+                }
                 _log.LogWarning(
-                    "Uncertain live order intent {Intent}: tokens for {Token} are gone on-chain; closing intent and removing tracked position without writing a loss",
-                    record.IntentId, record.TokenId);
+                    "Uncertain live order intent {Intent}: no resting order and no fill (tokens={Balance}); closing intent and resuming",
+                    record.IntentId, remaining.ToString("F4"));
                 _journal.Complete(record.IntentId);
-                var vanished = portfolio.Positions.FirstOrDefault(p => p.TokenId == record.TokenId);
-                if (vanished is not null)
-                    portfolio.CloseExternalPosition(vanished.ConditionId);
                 continue;
             }
 
