@@ -290,6 +290,26 @@ using (var second = new InstanceLock(lockDir))
 }
 Directory.Delete(lockDir, true);
 
+// PID-reuse guard: a foreign live pid recorded in the lock must be treated as a
+// stale owner, otherwise a recycled pid blocks startup forever (WSL orphans).
+if (OperatingSystem.IsLinux())
+{
+    var reuseDir = Path.Combine(Path.GetTempPath(), $"polymarket-selftest-{Guid.NewGuid()}");
+    Directory.CreateDirectory(reuseDir);
+    var foreign = System.Diagnostics.Process.Start("sleep", "60")!;
+    try
+    {
+        File.WriteAllText(Path.Combine(reuseDir, "bot.lock"), $$"""{"pid":{{foreign.Id}}}""");
+        using var recovered = new InstanceLock(reuseDir);
+        if (!recovered.Acquire()) throw new Exception("Instance lock must recover from a reused pid");
+    }
+    finally
+    {
+        foreign.Kill(); foreign.Dispose();
+        Directory.Delete(reuseDir, true);
+    }
+}
+
 var watchDir = Path.Combine(Path.GetTempPath(), $"polymarket-watch-{Guid.NewGuid()}");
 var contextMarket = new MarketInfo { ConditionId = "context", Question = "context", Slug = "",
     TokenIdYes = "y", TokenIdNo = "n", OutcomeYesPrice = .5, OutcomeNoPrice = .5,

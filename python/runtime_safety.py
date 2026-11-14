@@ -199,6 +199,15 @@ class InstanceLock:
                     return False
                 ctypes.windll.kernel32.CloseHandle(handle)
                 return True
+            # POSIX: PID-reuse guard — trust the pid only when it is (still) a bot
+            # process, otherwise a recycled pid makes a dead owner look alive.
+            try:
+                cmdline = Path(f"/proc/{pid}/cmdline").read_bytes().lower()
+                if cmdline:
+                    return b"polymarketbot" in cmdline or b"main.py" in cmdline
+                return False  # zombie owner: no command line left
+            except OSError:
+                pass  # no /proc (macOS) or dead pid — fall through to the signal probe
             os.kill(pid, 0)
             return True
         except (OSError, ValueError, json.JSONDecodeError):

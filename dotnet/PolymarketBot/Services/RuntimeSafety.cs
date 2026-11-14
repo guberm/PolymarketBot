@@ -202,7 +202,16 @@ public sealed class InstanceLock : IDisposable
         try
         {
             using var doc = JsonDocument.Parse(File.ReadAllText(_path));
-            var process = Process.GetProcessById(doc.RootElement.GetProperty("pid").GetInt32());
+            var pid = doc.RootElement.GetProperty("pid").GetInt32();
+            if (pid <= 0) return false;
+            // PID-reuse guard: trust the pid only when it is (still) a bot process,
+            // otherwise a recycled pid makes a dead owner look alive and blocks startup.
+            if (OperatingSystem.IsLinux())
+            {
+                var cmdline = System.Text.Encoding.UTF8.GetString(File.ReadAllBytes($"/proc/{pid}/cmdline")).ToLowerInvariant();
+                return cmdline.Contains("polymarketbot") || cmdline.Contains("main.py");
+            }
+            var process = Process.GetProcessById(pid);
             return !process.HasExited;
         }
         catch (Exception)

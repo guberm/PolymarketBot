@@ -151,7 +151,48 @@ self_test() {
 }
 
 [ "${1:-}" = "--self-test" ] && { self_test; exit 0; }
-[ "${1:-}" = "--stop" ] && { [ "$(id -u)" = 0 ] || die 'Root is required'; cleanup; exit 0; }
+
+stop_bot() {
+  # Orphan-safe stop: the namespace cleanup cannot reach a bot whose netns was
+  # already torn down from under it, so also kill the pid recorded in bot.lock.
+  local data=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --data) data="$2"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  [ -n "$data" ] || return 0
+  local lock="$data/bot.lock"
+  [ -f "$lock" ] || return 0
+  local pid
+  pid="$(python3 - "$lock" <<'PY'
+import json, sys
+try:
+    print(json.load(open(sys.argv[1], encoding="utf-8")).get("pid", ""))
+except Exception:
+    pass
+PY
+)"
+  case "$pid" in ''|*[!0-9]*) rm -f "$lock"; return 0 ;; esac
+  if ! kill -0 "$pid" 2>/dev/null; then
+    rm -f "$lock"
+    return 0
+  fi
+  # PID-reuse guard: only kill the pid when it is (still) a bot process.
+  if [ -r "/proc/$pid/cmdline" ] && ! tr '\0' ' ' < "/proc/$pid/cmdline" | grep -qiE 'polymarketbot|main\.py'; then
+    log "Lock pid $pid is not a bot process (pid reuse); removing stale lock only"
+    rm -f "$lock"
+    return 0
+  fi
+  log "Killing orphaned bot process $pid recorded in $lock"
+  kill -9 "$pid" 2>/dev/null || true
+  sleep 1
+  kill -9 "$pid" 2>/dev/null || true
+  rm -f "$lock"
+}
+
+[ "${1:-}" = "--stop" ] && { [ "$(id -u)" = 0 ] || die 'Root is required'; stop_bot "$@"; cleanup; exit 0; }
 
 CONFIG="" DATA="" ROOT="" BOT_MODE="python"
 BOT_ARGS=()

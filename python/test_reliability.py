@@ -142,13 +142,30 @@ class ReliabilityTests(unittest.TestCase):
 
     def test_provider_specific_cost_and_instance_lock(self):
         self.assertAlmostEqual(calculate_api_cost("a=1/2,b=3/4", "b", 1_000_000, 500_000), 5.0)
+        import os as _os
+        import subprocess
         with tempfile.TemporaryDirectory() as directory:
-            first, second = InstanceLock(directory), InstanceLock(directory)
-            self.assertTrue(first.acquire())
-            self.assertFalse(second.acquire())
-            first.release()
-            self.assertTrue(second.acquire())
-            second.release()
+            # A live bot-named owner must be refused (bot process faked via exec -a).
+            owned = subprocess.Popen(["bash", "-c", "exec -a PolymarketBot.dll sleep 60"])
+            try:
+                lock_path = Path(directory) / "bot.lock"
+                lock_path.write_text(json.dumps({"pid": owned.pid}))
+                second = InstanceLock(directory)
+                self.assertFalse(second.acquire())
+            finally:
+                owned.kill()
+                owned.wait()
+            # A foreign live pid (pid reuse) must be treated as a stale owner.
+            foreign = subprocess.Popen(["sleep", "60"])
+            try:
+                lock_path.write_text(json.dumps({"pid": foreign.pid}))
+                recovered = InstanceLock(directory)
+                self.assertTrue(recovered.acquire())
+                recovered.release()
+                self.assertFalse(lock_path.exists())
+            finally:
+                foreign.kill()
+                foreign.wait()
 
     def test_invalid_model_json_still_counts_provider_cost(self):
         config = BotConfig(

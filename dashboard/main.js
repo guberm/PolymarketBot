@@ -439,8 +439,10 @@ function stopBotProcess() {
   const vpn = activeVpn
   activeVpn = null
   return new Promise(resolve => {
+    const stopArgs = ['bash', toWslPath(vpn.scriptPath), '--stop']
+    if (dataDir) stopArgs.push('--data', toWslPath(dataDir))
     const stopper = spawn('wsl.exe', [
-      '-d', vpn.distro, '-u', 'root', '--', 'bash', toWslPath(vpn.scriptPath), '--stop',
+      '-d', vpn.distro, '-u', 'root', '--', ...stopArgs,
     ], { shell: false, stdio: 'ignore' })
     const timer = setTimeout(() => { stopper.kill(); resolve() }, 10000)
     stopper.on('error', () => { clearTimeout(timer); resolve() })
