@@ -270,7 +270,7 @@ httpClient.DefaultRequestVersion = HttpVersion.Version11;
 httpClient.DefaultVersionPolicy = HttpVersionPolicy.RequestVersionExact;
 // Explicit UA: an empty User-Agent is a strong Cloudflare bot signal on
 // gamma/clob endpoints and contributes to 406 WAF rejections.
-httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("PolymarketBot/1.7.0 (github.com/guberm/PolymarketBot)");
+httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("PolymarketBot/1.8.0 (github.com/guberm/PolymarketBot)");
 httpClient.DefaultRequestHeaders.Add("Accept", "application/json");
 using var cts = new CancellationTokenSource();
 
@@ -1330,5 +1330,5 @@ static MarketInfo BuildReviewMarket(Position pos)
 // Single source of truth for the release version printed at startup; bump together with the git tag.
 internal static class AppVersion
 {
-    public const string BotVersion = "1.7.0";
+    public const string BotVersion = "1.8.0";
 }
