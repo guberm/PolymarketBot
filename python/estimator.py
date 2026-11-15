@@ -434,7 +434,9 @@ class Estimator:
             result = self._call_anthropic(market)
         elif provider == "gemini":
             result = self._call_gemini(market)
-        elif provider in ("openai", "openrouter", "azure_openai", "jev", "custom"):
+        elif provider == "jev":
+            result = self._call_jev(market)
+        elif provider in ("openai", "openrouter", "azure_openai", "custom"):
             result = self._call_openai_compat(market, provider)
         else:
             log.error(f"Unknown AI provider: {provider}")
@@ -519,6 +521,41 @@ class Estimator:
         return None
 
     # ── OpenAI-compatible (OpenAI, OpenRouter, Azure OpenAI) ──────────────
+
+    def _call_jev(self, market: MarketInfo):
+        """Jev (TypeSafe System One): structured-decision API. Returns noul = P(YES)."""
+        model = self.config.jev_model or "jev-latest"
+        state = (f"Market: {market.question}\nEvent: {market.event_title}\n"
+                 f"Category: {market.category}\nDescription: {market.description}\n"
+                 f"Resolution date: {market.end_date}")
+        payload = {
+            "model": model,
+            "state": state,
+            "questions": {"will_resolve_yes": {
+                "type": "noul",
+                "instructions": "What is the probability this prediction market resolves YES (the outcome named 'Yes' happens)?",
+            }},
+        }
+        host = (self.config.jev_api_host or "https://api.typesafe.ai").rstrip("/")
+        headers = {"Authorization": f"Bearer {self.config.jev_api_key}", "Content-Type": "application/json"}
+        try:
+            resp = self._post_json_with_retry("jev", f"{host}/v1/systemone", payload, headers)
+            if resp is None:
+                return None
+            resp.raise_for_status()
+            data = resp.json()
+            noul = float(data["answers"]["will_resolve_yes"]["noul"])
+            usage = data.get("usage", {})
+            in_tok = usage.get("input_tokens", 0)
+            out_tok = usage.get("output_tokens", 0)
+            reasoning = f"Jev noul (calibrated decision model, {data.get('model', 'jev')})"
+            return noul, reasoning, in_tok, out_tok
+        except requests.exceptions.HTTPError as e:
+            log.error(f"jev API error: {e}")
+            return None
+        except Exception as e:
+            log.debug(f"jev call failed: {e}")
+            return None
 
     def _call_openai_compat(self, market: MarketInfo, provider: str):
         model = self._get_model(provider)

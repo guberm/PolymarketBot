@@ -439,7 +439,7 @@ public sealed class Estimator
             "gemini"       => await MakeGeminiRequestAsync(userPrompt, ct),
             "openai"       => await MakeOpenAiCompatRequestAsync("openai", userPrompt, ct),
             "openrouter"   => await MakeOpenAiCompatRequestAsync("openrouter", userPrompt, ct),
-            "jev"          => await MakeOpenAiCompatRequestAsync("jev", userPrompt, ct),
+            "jev"          => await MakeJevRequestAsync(market, ct),
             "custom"       => await MakeOpenAiCompatRequestAsync("custom", userPrompt, ct),
             "azure_openai" => await MakeOpenAiCompatRequestAsync("azure_openai", userPrompt, ct),
             _              => await MakeAnthropicRequestAsync(userPrompt, ct),
@@ -478,6 +478,48 @@ public sealed class Estimator
         var outputTokens = usage.GetProperty("output_tokens").GetInt32();
         var (prob, reasoning) = ParseProbabilityJson(text);
         return new CallResult(prob < 0 ? null : prob, reasoning, inputTokens, outputTokens);
+    }
+
+    // ── Jev (TypeSafe System One decision API) ─────────────────────────────
+
+    // Jev is a structured-decision API, not a text chat: send state + a Noul
+    // question, get back answers.will_resolve_yes.noul (probability of YES, 0-1).
+    private async Task<(int, string, string?)> MakeJevRequestAsync(MarketInfo market, CancellationToken ct)
+    {
+        var model = string.IsNullOrEmpty(_config.JevModel) ? "jev-latest" : _config.JevModel;
+        var state = $"Market: {market.Question}\nEvent: {market.EventTitle}\nCategory: {market.Category}\nDescription: {market.Description}\nResolution date: {market.EndDate}";
+        var body = JsonSerializer.Serialize(new
+        {
+            model,
+            state,
+            questions = new Dictionary<string, object>
+            {
+                ["will_resolve_yes"] = new
+                {
+                    type = "noul",
+                    instructions = "What is the probability this prediction market resolves YES (the outcome named 'Yes' happens)?",
+                },
+            },
+        });
+        var host = _config.JevApiHost.TrimEnd('/');
+        var req = new HttpRequestMessage(HttpMethod.Post, $"{host}/v1/systemone")
+        {
+            Content = new StringContent(body, Encoding.UTF8, "application/json")
+        };
+        req.Headers.Add("Authorization", $"Bearer {_config.JevApiKey}");
+        using var resp = await _http.SendAsync(req, ct);
+        return ((int)resp.StatusCode, await resp.Content.ReadAsStringAsync(ct), RetryAfter(resp));
+    }
+
+    private static CallResult? ParseJevResponse(string body)
+    {
+        var doc = JsonDocument.Parse(body);
+        var answer = doc.RootElement.GetProperty("answers").GetProperty("will_resolve_yes");
+        var prob = answer.GetProperty("noul").GetDouble();
+        var usage = doc.RootElement.GetProperty("usage");
+        var inputTokens = usage.GetProperty("input_tokens").GetInt32();
+        var outputTokens = usage.GetProperty("output_tokens").GetInt32();
+        return new CallResult(prob, "Jev noul (calibrated decision model)", inputTokens, outputTokens);
     }
 
     // ── OpenAI-compatible (OpenAI, OpenRouter, Azure OpenAI) ──────────────
@@ -615,7 +657,7 @@ public sealed class Estimator
             "gemini"       => ParseGeminiResponse(body),
             "openai"       => ParseOpenAiCompatResponse(body),
             "openrouter"   => ParseOpenAiCompatResponse(body),
-            "jev"          => ParseOpenAiCompatResponse(body),
+            "jev"          => ParseJevResponse(body),
             "custom"       => ParseOpenAiCompatResponse(body),
             "azure_openai" => ParseOpenAiCompatResponse(body),
             _              => ParseAnthropicResponse(body),
@@ -724,7 +766,7 @@ public sealed class Estimator
                 {
                     "openai" => ($"{(_config.OpenAiApiHost.TrimEnd('/'))}/v1/chat/completions", "Authorization", $"Bearer {_config.OpenAiApiKey}"),
                     "openrouter" => ($"{(string.IsNullOrEmpty(_config.OpenRouterApiHost) ? "https://openrouter.ai" : _config.OpenRouterApiHost.TrimEnd('/'))}/api/v1/chat/completions", "Authorization", $"Bearer {_config.OpenRouterApiKey}"),
-                    "jev" => ($"{(_config.JevApiHost.TrimEnd('/'))}/v1/chat/completions", "Authorization", $"Bearer {_config.JevApiKey}"),
+                    "jev" => ($"{(_config.JevApiHost.TrimEnd('/'))}/v1/models", "Authorization", $"Bearer {_config.JevApiKey}"),
                     "custom" => ($"{(_config.CustomApiHost.TrimEnd('/'))}/v1/chat/completions", "Authorization", $"Bearer {_config.CustomApiKey}"),
                     _ => ($"{_config.AzureOpenAiEndpoint.TrimEnd('/')}/openai/deployments/{_config.AzureOpenAiDeployment}/chat/completions?api-version={_config.AzureOpenAiApiVersion}", "api-key", _config.AzureOpenAiApiKey),
                 };
