@@ -4,16 +4,29 @@ Running notes between Claude Code sessions. Not a changelog — just current sta
 
 ---
 
-## Current State (as of 2026-03-21)
+## Current State (as of 2026-11-15)
 
-- **Mode:** LIVE on Polygon (chain ID 137)
-- **Wallet:** Gnosis Safe (`polymarket_signature_type: 1`)
-- **Active implementation:** .NET (run via `run-bot.bat` or `dotnet run -- --console`)
-- **Dashboard:** `run-dashboard.bat` or `run-dashboard.vbs` (no terminal window)
-- **Active providers:** Anthropic + Azure OpenAI (Gemini disabled via `gemini_enabled: false` — free-tier rate limits)
-- **Settings:** persisted to `dashboard-settings.json` in bot root
-
----
+- **Mode:** LIVE on Polygon (chain ID 137), bot v1.7.0+ (master)
+- **Network:** bridge proxy — the Windows bot runs natively and sends ALL HTTP
+  (gamma, CLOB, geoblock) through a tinyproxy on a Hetzner Helsinki VPS
+  (allowed region, geoblock FI). Commercial VPN exit pools (Surfshark IL/CY)
+  get order POSTs tarpitted by Polymarket risk systems (~60 s hangs + Gamma 406s) —
+  that is why the bridge exists.
+- **Proxy config:** `network_mode: "proxy"` + structured `proxy_*` fields in
+  `polymarket_bot_config.json`; the dashboard composes `HTTP_PROXY`/`HTTPS_PROXY`
+  env for the bot process. Credentials live in the local config (gitignored) and
+  in the access email sent 2026-11-15.
+- **Reliability systems:** startup recovery reconciles lost-response intents
+  against on-chain state; transport circuit breaker (2 consecutive unknown
+  order outcomes → 15-min pause, persisted in `data/transport-breaker.json`);
+  external-close accounting; gamma 406 diagnostics (`gzip_required` was the
+  historical cause — automatic decompression is enabled).
+- **Verified live:** take-profit SELL executed through the bridge
+  (9.58 NO @ 0.973, +$4.82), balance sync confirmed on-chain.
+- **Wallet:** Gnosis Safe (`polymarket_signature_type: 1`), funder
+  `0x6e1e4f95258f110d2498e3a2a0c9fed3375bd2d9` (public on-chain data).
+- **Known noise:** `wallet_flow_shadow` endpoint returns 410 Gone (disabled in
+  config); npm audit reports 2 high (Electron/undici) — accepted.
 
 ## AI Provider System
 
