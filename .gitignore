@@ -57,3 +57,4 @@ transcript.md
 # per-machine dashboard UI state and local backups
 dashboard-settings.json
 *.bak
+polymarket_bot_config.json.bak_std
