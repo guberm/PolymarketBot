@@ -1312,7 +1312,6 @@ const CONFIG_SCHEMA = [
   ]},
   { section: 'NETWORK', ru: 'СЕТЬ', fields: [
     { key: 'network_mode', label: 'Bot Network', ru: 'Сеть бота', type: 'select', default: 'direct', options: [['direct', 'Direct'], ['proxy', 'HTTP/HTTPS proxy'], ['wireguard', 'WireGuard (isolated)'], ['openvpn', 'OpenVPN (isolated)']] },
-    { key: 'polymarket_proxy_url', label: 'Bridge Proxy URL', ru: 'URL прокси-моста', type: 'text', networkModes: ['direct', 'proxy'] },
     { key: 'vpn_config_path', label: 'VPN Config File', ru: 'Файл конфигурации VPN', type: 'file', networkModes: ['wireguard', 'openvpn'] },
     { key: 'vpn_wsl_distro', label: 'WSL Distribution', ru: 'Дистрибутив WSL', type: 'text', default: 'Ubuntu', networkModes: ['wireguard', 'openvpn'] },
     { key: 'wireguard_private_key', label: 'WireGuard Private Key', ru: 'Приватный ключ WireGuard', type: 'password', networkModes: ['wireguard'] },
