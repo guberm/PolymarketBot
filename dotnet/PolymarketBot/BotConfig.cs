@@ -100,9 +100,6 @@ public sealed class BotConfig
     public double MaxLiveOrderBankrollPct { get; init; } = 0.25;
     public bool AllowUnsafeRisk { get; init; } = false;
 
-    // Bridge proxy (VPS in an allowed region): all bot HTTP goes through it when set.
-    public string PolymarketProxyUrl { get; init; } = "";
-
     // Risk
     public double MaxPositionPct { get; set; } = 0.15;
     public double MaxTotalExposurePct { get; set; } = 1.00;
@@ -249,7 +246,6 @@ public sealed class BotConfig
             ResolutionRetryHours = double.Parse(Cfg("resolution_retry_hours", "RESOLUTION_RETRY_HOURS", "6")),
             MaxLiveOrderBankrollPct = double.Parse(Cfg("max_live_order_bankroll_pct", "MAX_LIVE_ORDER_BANKROLL_PCT", "0.25")),
             AllowUnsafeRisk = Cfg("allow_unsafe_risk", "ALLOW_UNSAFE_RISK", "false").Equals("true", StringComparison.OrdinalIgnoreCase),
-            PolymarketProxyUrl = Cfg("polymarket_proxy_url", "POLYMARKET_PROXY_URL", ""),
             MaxPositionPct = double.Parse(Cfg("max_position_pct", "MAX_POSITION_PCT", "0.15")),
             MaxTotalExposurePct = double.Parse(Cfg("max_total_exposure_pct", "MAX_TOTAL_EXPOSURE_PCT", "1.00")),
             MaxCategoryExposurePct = double.Parse(Cfg("max_category_exposure_pct", "MAX_CATEGORY_EXPOSURE_PCT", "0.80")),

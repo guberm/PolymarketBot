@@ -245,19 +245,15 @@ var httpHandler = new SocketsHttpHandler();
 httpHandler.AutomaticDecompression = System.Net.DecompressionMethods.GZip
     | System.Net.DecompressionMethods.Deflate
     | System.Net.DecompressionMethods.Brotli;
-if (!string.IsNullOrEmpty(config.PolymarketProxyUrl))
+// Bridge proxy comes from the environment (HTTP_PROXY/HTTPS_PROXY — the dashboard
+// composes them from the proxy fields in proxy mode).
+var proxyEnv = Environment.GetEnvironmentVariable("HTTPS_PROXY")
+    ?? Environment.GetEnvironmentVariable("HTTP_PROXY");
+if (!string.IsNullOrEmpty(proxyEnv))
 {
-    var proxyUri = new Uri(config.PolymarketProxyUrl);
-    var webProxy = new WebProxy(proxyUri);
-    if (!string.IsNullOrEmpty(proxyUri.UserInfo))
-    {
-        var sep = proxyUri.UserInfo.IndexOf(':');
-        webProxy.Credentials = new NetworkCredential(
-            sep < 0 ? proxyUri.UserInfo : proxyUri.UserInfo[..sep],
-            sep < 0 ? "" : proxyUri.UserInfo[(sep + 1)..]);
-    }
-    httpHandler.Proxy = webProxy;
-    log.LogInformation("All bot HTTP traffic via bridge proxy {Host}:{Port}", proxyUri.Host, proxyUri.Port);
+    httpHandler.Proxy = new WebProxy(new Uri(proxyEnv));
+    var proxyUri = new Uri(proxyEnv);
+    log.LogInformation("All bot HTTP traffic via proxy {Host}:{Port} (from environment)", proxyUri.Host, proxyUri.Port);
 }
 using var httpClient = new HttpClient(httpHandler);
 // gamma-api (istio-envoy) answers 406 to this client's HTTP/2 through a CONNECT

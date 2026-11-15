@@ -217,7 +217,7 @@ class LiveTrader:
             log.warning(
                 "Transport hint: order POSTs dying after ~60s with Gamma 406s afterwards usually mean "
                 "this exit IP is flagged by Polymarket risk systems. Use a different VPN location or "
-                "set polymarket_proxy_url to a bridge in an allowed region; recovery sweeps any resting order on next start."
+                "or run the bot through a bridge proxy in an allowed region (Dashboard ⚙ NETWORK → proxy fields); recovery sweeps any resting order on next start."
             )
 
     def _note_order_submitted(self) -> None:

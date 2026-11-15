@@ -183,7 +183,6 @@ class BotConfig:
     # Polymarket endpoints
     gamma_api_host: str = ""
     clob_host: str = ""
-    polymarket_proxy_url: str = ""
     exchange_address: str = "0xE111180000d2663C0091e4f400237545B87B996B"
     neg_risk_exchange_address: str = "0xe2222d279d744050d28e00520010520000310F59"
 
@@ -315,7 +314,6 @@ class BotConfig:
             polymarket_api_passphrase=get("polymarket_api_passphrase", ""),
             gamma_api_host=get("gamma_api_host", ""),
             clob_host=get("clob_host", ""),
-            polymarket_proxy_url=str(get("polymarket_proxy_url", os.environ.get("POLYMARKET_PROXY_URL", ""))),
             exchange_address=get("exchange_address", "0xE111180000d2663C0091e4f400237545B87B996B"),
             neg_risk_exchange_address=get("neg_risk_exchange_address", "0xe2222d279d744050d28e00520010520000310F59"),
             email_enabled=get("email_enabled", False),

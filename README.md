@@ -176,15 +176,12 @@ the reliable setup is a **bridge proxy on your own VPS in an allowed region**:
    printf 'Port 8888\nBasicAuth bridge <password>\nAllow 0.0.0.0/0\nAllow ::/0\n' >> /etc/tinyproxy/tinyproxy.conf
    systemctl restart tinyproxy
    ```
-3. Point the bot at it (Dashboard ⚙ Config → NETWORK → mode `proxy`, or the config key
-   `polymarket_proxy_url` below). The dashboard passes proxy env vars to the bot process;
-   the bot-level `polymarket_proxy_url` key takes precedence when set.
+3.   Point the bot at it: Dashboard ⚙ Config → NETWORK → mode `proxy` + the proxy fields.
+   The dashboard passes the composed proxy env vars to the bot process.
 4. Verify from the bot host through the proxy — geoblock must report the VPS region and
    the startup log must show `All bot HTTP traffic via bridge proxy`.
 
 Notes:
-- The bot-level key is optional: set `polymarket_proxy_url` to override the structured
-  `proxy_*` fields, e.g. `"polymarket_proxy_url": "http://user:pass@203.0.113.10:8888"`.
 - gamma-api serves `/events` compressed and answers `406 {"error":"gzip_required"}` to
   clients without `Accept-Encoding: gzip`; the .NET client enables automatic
   decompression, and 406 responses now log a `406 diagnostics:` line (server + body)
@@ -391,7 +388,6 @@ All settings live in **`polymarket_bot_config.json`**. See `polymarket_bot_confi
 | `proxy_host` / `proxy_port` | — | Proxy endpoint |
 | `proxy_username` / `proxy_password` | — | Optional proxy authentication |
 | `proxy_bypass` | — | Comma-separated `NO_PROXY` hosts |
-| `polymarket_proxy_url` | — | Optional bot-level override; full proxy URL that takes precedence over the `proxy_*` fields |
 
 ### AI Provider
 
