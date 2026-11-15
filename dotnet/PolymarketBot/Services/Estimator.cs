@@ -37,6 +37,11 @@ public sealed class Estimator
     private readonly ConcurrentDictionary<string, DateTimeOffset> _providerOpenUntil = new();
     public double LastApiCostUsd { get; private set; }
 
+    /// <summary>Estimate rejected by the low-confidence gate — recorded for calibration
+    /// even though it is not tradeable, so provider skill (e.g. unanchored providers)
+    /// can be measured on the wildest divergences too.</summary>
+    public Estimate? LastRejectedEstimate { get; private set; }
+
     public void ResetCycle()
     {
         _rateLimitedThisCycle.Clear();
@@ -63,6 +68,7 @@ public sealed class Estimator
     {
         var started = System.Diagnostics.Stopwatch.StartNew();
         LastApiCostUsd = 0;
+        LastRejectedEstimate = null;
         var estimate = _config.MultiProvider
             ? await EstimateMultiAsync(market, ct)
             : await EstimateSingleAsync(market, ct);
@@ -301,14 +307,32 @@ public sealed class Estimator
         var fairProb = fairProbabilityOverride ?? trimmed.Average();
         var confidence = rawEstimates.Count > 1 ? StdDev(rawEstimates) : 1.0;
 
+        var label = string.IsNullOrEmpty(note) ? "" : $"[{note}] ";
         if (rawEstimates.Count >= 2 && confidence > _config.MaxEstimateStd)
         {
             _log.LogInformation("SKIP (low confidence): {Question} std={Std:F3} > max={Max:F3}",
                 Truncate(market.Question, 50), confidence, _config.MaxEstimateStd);
+            LastRejectedEstimate = new Estimate
+            {
+                MarketConditionId = market.ConditionId,
+                Question = market.Question,
+                FairProbability = fairProb,
+                RawEstimates = rawEstimates,
+                Confidence = confidence,
+                ReasoningSummary = firstReasoning,
+                InputTokensUsed = totalInput,
+                OutputTokensUsed = totalOutput,
+                ApiCostUsd = apiCostUsd,
+                ProviderEstimates = providerEstimates ?? [],
+                PromptVersion = PromptVersion,
+                PromptSha256 = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
+                    SystemPrompt + "\n\n" + BuildUserPrompt(market)))).ToLowerInvariant(),
+                ProviderModels = (providerEstimates ?? []).Keys
+                    .ToDictionary(provider => provider, GetModelForProvider),
+            };
             return null;
         }
 
-        var label = string.IsNullOrEmpty(note) ? "" : $"[{note}] ";
         _log.LogInformation("Estimate: {Label}{Question} -> {Prob:P2} (n={Count}, std={Std:F3})",
             label, Truncate(market.Question, 50), fairProb, rawEstimates.Count, confidence);
 

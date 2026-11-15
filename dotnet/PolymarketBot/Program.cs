@@ -988,6 +988,13 @@ while (!cts.Token.IsCancellationRequested)
                 portfolio.RecordApiCostUsd(estimator.LastApiCostUsd);
             if (estimate is null)
             {
+                // Record the low-confidence rejection so calibration can score even the
+                // wildest provider divergences (e.g. unanchored providers) once resolved.
+                if (estimator.LastRejectedEstimate is { } rejected)
+                    PersistenceService.AppendEstimateEvaluation(market, rejected, null,
+                        config.MultiProvider ? "multi" : config.AiProvider,
+                        "skip", "no_confidence", config.DataDir, null, trackWatch: false,
+                        runId: runId, cycleId: $"{runId}:{cycle}");
                 log.LogInformation("  {Idx} SKIP (no usable estimate)", idx);
                 Con($"  {idx} -> {YELLOW}SKIP (no usable estimate){RESET}");
                 continue;
