@@ -1,7 +1,6 @@
 using System.Runtime.InteropServices;
 using Microsoft.Extensions.Logging;
 using System.Net;
-using System.Net.Http.Versioning;
 using PolymarketBot;
 using PolymarketBot.Models;
 using PolymarketBot.Services;
@@ -256,11 +255,11 @@ if (!string.IsNullOrEmpty(config.PolymarketProxyUrl))
     httpHandler.Proxy = webProxy;
     log.LogInformation("All bot HTTP traffic via bridge proxy {Host}:{Port}", proxyUri.Host, proxyUri.Port);
 }
+using var httpClient = new HttpClient(httpHandler);
 // gamma-api (istio-envoy) answers 406 to this client's HTTP/2 through a CONNECT
 // proxy; HTTP/1.1 is accepted everywhere this bot talks to.
 httpClient.DefaultRequestVersion = HttpVersion.Version11;
 httpClient.DefaultVersionPolicy = HttpVersionPolicy.RequestVersionExact;
-using var httpClient = new HttpClient(httpHandler);
 // Explicit UA: an empty User-Agent is a strong Cloudflare bot signal on
 // gamma/clob endpoints and contributes to 406 WAF rejections.
 httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("PolymarketBot/1.7.0 (github.com/guberm/PolymarketBot)");
