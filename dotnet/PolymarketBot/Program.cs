@@ -241,6 +241,10 @@ var recheckPersistedHalt = snapshot is not null && portfolio.IsHalted && portfol
 // ── Services ────────────────────────────────────────────────────
 
 var httpHandler = new SocketsHttpHandler();
+// gamma-api /events answers 406 "gzip_required" without Accept-Encoding.
+httpHandler.AutomaticDecompression = System.Net.DecompressionMethods.GZip
+    | System.Net.DecompressionMethods.Deflate
+    | System.Net.DecompressionMethods.Brotli;
 if (!string.IsNullOrEmpty(config.PolymarketProxyUrl))
 {
     var proxyUri = new Uri(config.PolymarketProxyUrl);
