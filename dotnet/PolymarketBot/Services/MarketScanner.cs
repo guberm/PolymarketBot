@@ -146,6 +146,15 @@ public sealed class MarketScanner
 
                 return [];
             }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                // HttpClient.Timeout (100 s) on one gamma request must not abort the cycle.
+                _log.LogWarning("Gamma /events request timed out (100 s, attempt {A}/3)", attempt + 1);
+                if (attempt < 2)
+                {
+                    await Task.Delay(1000, ct);
+                }
+            }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 if (attempt < 2)

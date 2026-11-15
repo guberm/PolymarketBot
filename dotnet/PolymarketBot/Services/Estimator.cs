@@ -339,9 +339,13 @@ public sealed class Estimator
 
         for (var attempt = 0; attempt <= 3; attempt++)
         {
+            // Per-attempt timeout: one hung provider call must fail as a provider
+            // failure, not cancel the whole cycle via HttpClient.Timeout (100 s).
+            using var attemptCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            attemptCts.CancelAfter(TimeSpan.FromSeconds(45));
             try
             {
-                var (status, body, retryAfter) = await MakeProviderRequestAsync(market, provider, ct);
+                var (status, body, retryAfter) = await MakeProviderRequestAsync(market, provider, attemptCts.Token);
 
                 if (status == 429 || status == 529)
                 {
@@ -379,6 +383,16 @@ public sealed class Estimator
             {
                 _log.LogDebug("{Provider} parse failed: {Error}", provider, ex.Message);
                 RecordProviderFailure(provider);
+                return null;
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                // Per-attempt timeout (or transient hang) — retry like any network error,
+                // but never abort the cycle. If the bot itself is shutting down (ct
+                // cancelled), let the cancellation propagate.
+                _log.LogWarning("{Provider} call timed out (45 s, attempt {A}/4)", provider, attempt + 1);
+                RecordProviderFailure(provider);
+                if (attempt < 3) continue;
                 return null;
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
