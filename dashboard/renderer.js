@@ -1600,17 +1600,6 @@ async function saveConfig() {
     $('ui-status').textContent = currentLang === 'ru' ? 'Исправьте некорректное числовое значение' : 'Fix the invalid numeric value'
     return
   }
-  // Proxy fields (host/port/...) are the source of truth in proxy mode:
-  // compose them into the bot-level polymarket_proxy_url on every save.
-  if (newConfig.network_mode === 'proxy' && String(newConfig.proxy_host || '').trim()) {
-    const protocol = String(newConfig.proxy_type || 'http').replace(/:$/, '')
-    const host = String(newConfig.proxy_host).trim()
-    const port = String(newConfig.proxy_port ?? '').trim()
-    const user = encodeURIComponent(String(newConfig.proxy_username || ''))
-    const pass = encodeURIComponent(String(newConfig.proxy_password || ''))
-    const auth = user ? `${user}:${pass}@` : ''
-    newConfig.polymarket_proxy_url = `${protocol}://${auth}${host}${port ? ':' + port : ''}`
-  }
   if (newConfig.email_security === 'starttls') {
     newConfig.email_smtp_port = 587
     newConfig.email_use_tls = true
