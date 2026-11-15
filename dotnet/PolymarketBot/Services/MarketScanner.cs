@@ -127,6 +127,13 @@ public sealed class MarketScanner
                     _log.LogError(
                         "Gamma returned 406 (WAF rejection) — this VPN exit IP is likely flagged by Polymarket risk systems. Try network_mode=direct or a different VPN server; attempts left: {Attempts}",
                         2 - attempt);
+                    // Diagnose WHO rejected: server header + body fingerprint.
+                    var srv = resp.Headers.Server.Count > 0
+                        ? string.Join(' ', resp.Headers.Server.Select(s => s.Product.Name))
+                        : "(no server header)";
+                    var body406 = await resp.Content.ReadAsStringAsync(ct);
+                    _log.LogWarning("406 diagnostics: server={Server} len={Len} body={Body}",
+                        srv, body406.Length, body406[..Math.Min(body406.Length, 240)]);
                     resp.EnsureSuccessStatusCode();
                 }
 
