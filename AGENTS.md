@@ -15,7 +15,8 @@ The bot has aligned Python and .NET implementations. `README.md` documents usage
 - Parse responses according to the provider actually called.
 - Apply uncertainty before edge thresholding and Kelly sizing.
 - Preserve layered exposure limits, exit cooldowns, ghost-position handling, external-close accounting (unresolved intent + vanished tokens must not write a realized loss), and atomic persistence.
-- Block new orders and paid AI estimates while a live POST outcome is unknown; startup recovery reconciles the pending intent against the on-chain balance.
+- Block new orders and paid AI estimates while a live POST outcome is unknown; startup recovery reconciles the pending intent against the on-chain token balance.
+- Keep the transport circuit breaker aligned across implementations: two consecutive unknown order outcomes open a 15-minute cooldown persisted in `data/transport-breaker.json`, startup recovery of a lost-response intent carries the streak, and any submitted order resets it.
 - Handle Gamma fields that may be JSON strings or arrays and CLOB tick sizes that may be strings or numbers.
 - Keep dashboard configuration fields and runtime configuration in sync when either changes.
 

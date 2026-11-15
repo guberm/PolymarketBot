@@ -156,6 +156,40 @@ Proxy example:
 }
 ```
 
+### Proxy bridge to your own VPS (production-proven for restricted regions)
+
+If the bot host sits in a Polymarket-restricted region (e.g. Canada/Ontario) **and**
+VPN-provider exit pools get their order POSTs tarpitted by risk systems (observed:
+~60 s hangs on `POST /order` followed by Gamma 406s across several Surfshark pools),
+the reliable setup is a **bridge proxy on your own VPS in an allowed region**:
+
+1. Rent any cheap VPS in an allowed region (Hetzner Helsinki was verified: geoblock
+   `FI`, `POST /order` answered in 0.06 s). Check the IP before configuring anything:
+   ```bash
+   curl -m 15 -s -o /dev/null -w 'HTTP %{http_code} in %{time_total}s\n' \
+     -X POST https://clob.polymarket.com/order -H 'Content-Type: application/json' -d '{}'
+   ```
+   A fast 4xx (401/403) means the IP is clean; a hang means pick another provider/region.
+2. Install a proxy on the VPS and protect it with BasicAuth:
+   ```bash
+   apt install -y tinyproxy
+   printf 'Port 8888\nBasicAuth bridge <password>\nAllow 0.0.0.0/0\nAllow ::/0\n' >> /etc/tinyproxy/tinyproxy.conf
+   systemctl restart tinyproxy
+   ```
+3. Point the bot at it (Dashboard ⚙ Config → NETWORK → mode `proxy`, or the config key
+   `polymarket_proxy_url` below). The dashboard passes proxy env vars to the bot process;
+   the bot-level `polymarket_proxy_url` key takes precedence when set.
+4. Verify from the bot host through the proxy — geoblock must report the VPS region and
+   the startup log must show `All bot HTTP traffic via bridge proxy`.
+
+Notes:
+- The bot-level key is optional: set `polymarket_proxy_url` to override the structured
+  `proxy_*` fields, e.g. `"polymarket_proxy_url": "http://user:pass@203.0.113.10:8888"`.
+- gamma-api serves `/events` compressed and answers `406 {"error":"gzip_required"}` to
+  clients without `Accept-Encoding: gzip`; the .NET client enables automatic
+  decompression, and 406 responses now log a `406 diagnostics:` line (server + body)
+  so the real reason is visible in `bot.log`.
+
 ### VPN runtime and safety
 
 - Requires Windows, WSL2, and the configured Linux distribution (default: `Ubuntu`).
@@ -357,6 +391,7 @@ All settings live in **`polymarket_bot_config.json`**. See `polymarket_bot_confi
 | `proxy_host` / `proxy_port` | — | Proxy endpoint |
 | `proxy_username` / `proxy_password` | — | Optional proxy authentication |
 | `proxy_bypass` | — | Comma-separated `NO_PROXY` hosts |
+| `polymarket_proxy_url` | — | Optional bot-level override; full proxy URL that takes precedence over the `proxy_*` fields |
 
 ### AI Provider
 
@@ -535,6 +570,8 @@ Plus **cooldown**: blocks re-entry for 2 cycles after any close.
 
 - Any live order whose POST outcome is unknown (network error, lost response) marks the session as **uncertain**. While uncertain: no new BUY / SELL / TOPUP orders are sent, and no new AI estimates are paid for — existing positions and exits are still valued. The block clears after startup recovery reconciles the pending intent against the on-chain token balance.
 - Recovery: if an uncertain intent's tokens have vanished on-chain and no tracked position remains, the intent is closed as `external_close` and the bot starts normally. Tokens still on-chain keep the bot in manual-reconciliation mode.
+- Transport circuit breaker: **two consecutive unknown order outcomes** open a 15-minute cooldown that pauses all live orders (any submitted order resets it). The breaker persists in `data/transport-breaker.json` and startup recovery of a lost-response intent carries the streak — restarting the bot no longer retries a broken transport once per start.
+- Gamma 406 responses log a diagnostics line (server header + body fingerprint); the common self-inflicted cause is a missing `Accept-Encoding: gzip` on `/events` (`gzip_required`).
 
 All limits use **portfolio value** (bankroll + open positions), not just free cash.
 
