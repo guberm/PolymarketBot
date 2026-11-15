@@ -23,8 +23,9 @@ Running notes between Claude Code sessions. Not a changelog — just current sta
   historical cause — automatic decompression is enabled).
 - **Verified live:** take-profit SELL executed through the bridge
   (9.58 NO @ 0.973, +$4.82), balance sync confirmed on-chain.
-- **Wallet:** Gnosis Safe (`polymarket_signature_type: 1`), funder
-  `0x6e1e4f95258f110d2498e3a2a0c9fed3375bd2d9` (public on-chain data).
+- **Wallet:** Gnosis Safe (`polymarket_signature_type: 1`); funder/signer addresses —
+  see the gitignored `polymarket_bot_config.json` (kept out of the public repo to not
+  link this GitHub identity to the on-chain wallet).
 - **Known noise:** `wallet_flow_shadow` endpoint returns 410 Gone (disabled in
   config); npm audit reports 2 high (Electron/undici) — accepted.
 
