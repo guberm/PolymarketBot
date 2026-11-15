@@ -212,6 +212,8 @@ The bot supports five AI providers for market estimation. Set `ai_provider` to c
 | OpenRouter | `openrouter` | `openrouter_model` | Proxy for 100+ models |
 | OpenAI | `openai` | `openai_model` | gpt-4o recommended |
 | Azure OpenAI | `azure_openai` | `azure_openai_deployment` | Enterprise Azure endpoint |
+| Jev | `jev` | `jev_model` | Generic OpenAI-compatible endpoint (`jev_api_host` + `jev_api_key`) |
+| Custom | `custom` | `custom_model` | Any OpenAI-compatible endpoint (`custom_api_host` + `custom_api_key`) |
 
 ### Single-provider mode
 

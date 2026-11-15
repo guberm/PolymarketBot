@@ -1,6 +1,6 @@
 'use strict'
 
-const PROVIDERS = ['anthropic', 'openai', 'gemini', 'openrouter', 'azure_openai']
+const PROVIDERS = ['anthropic', 'openai', 'gemini', 'openrouter', 'azure_openai', 'jev', 'custom']
 
 function asTime(value) {
   if (typeof value === 'number') return value > 1e12 ? value : value * 1000

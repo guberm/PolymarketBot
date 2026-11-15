@@ -64,6 +64,16 @@ public sealed class BotConfig
     public string OpenRouterApiKey { get; init; } = "";
     public string OpenRouterApiHost { get; init; } = "https://openrouter.ai";
     public string OpenRouterModel { get; init; } = "";
+
+    // Jev + Custom — generic OpenAI-compatible providers (host/key/model per provider)
+    public bool JevEnabled { get; init; } = false;
+    public string JevApiKey { get; init; } = "";
+    public string JevApiHost { get; init; } = "";
+    public string JevModel { get; init; } = "";
+    public bool CustomEnabled { get; init; } = false;
+    public string CustomApiKey { get; init; } = "";
+    public string CustomApiHost { get; init; } = "";
+    public string CustomModel { get; init; } = "";
     // Azure OpenAI
     public bool AzureOpenAiEnabled { get; init; } = true;
     public string AzureOpenAiApiKey { get; init; } = "";
@@ -216,6 +226,14 @@ public sealed class BotConfig
             OpenRouterApiKey = Cfg("openrouter_api_key", "OPENROUTER_API_KEY", ""),
             OpenRouterApiHost = Cfg("openrouter_api_host", "OPENROUTER_API_HOST", "https://openrouter.ai"),
             OpenRouterModel = Cfg("openrouter_model", "OPENROUTER_MODEL", ""),
+            JevEnabled = Cfg("jev_enabled", "JEV_ENABLED", "false").Equals("true", StringComparison.OrdinalIgnoreCase),
+            JevApiKey = Cfg("jev_api_key", "JEV_API_KEY", ""),
+            JevApiHost = Cfg("jev_api_host", "JEV_API_HOST", ""),
+            JevModel = Cfg("jev_model", "JEV_MODEL", ""),
+            CustomEnabled = Cfg("custom_enabled", "CUSTOM_ENABLED", "false").Equals("true", StringComparison.OrdinalIgnoreCase),
+            CustomApiKey = Cfg("custom_api_key", "CUSTOM_API_KEY", ""),
+            CustomApiHost = Cfg("custom_api_host", "CUSTOM_API_HOST", ""),
+            CustomModel = Cfg("custom_model", "CUSTOM_MODEL", ""),
             AzureOpenAiEnabled = Cfg("azure_openai_enabled", "AZURE_OPENAI_ENABLED", "true").Equals("true", StringComparison.OrdinalIgnoreCase),
             AzureOpenAiApiKey = Cfg("azure_openai_api_key", "AZURE_OPENAI_API_KEY", ""),
             AzureOpenAiEndpoint = Cfg("azure_openai_endpoint", "AZURE_OPENAI_ENDPOINT", ""),

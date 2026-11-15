@@ -114,6 +114,14 @@ class BotConfig:
     openrouter_api_key: str = ""
     openrouter_api_host: str = "https://openrouter.ai"
     openrouter_model: str = ""
+    jev_enabled: bool = False
+    jev_api_key: str = ""
+    jev_api_host: str = ""
+    jev_model: str = ""
+    custom_enabled: bool = False
+    custom_api_key: str = ""
+    custom_api_host: str = ""
+    custom_model: str = ""
 
     # Azure OpenAI
     azure_openai_enabled: bool = True
@@ -261,6 +269,14 @@ class BotConfig:
             openrouter_api_key=get("openrouter_api_key", ""),
             openrouter_api_host=get("openrouter_api_host", "https://openrouter.ai"),
             openrouter_model=get("openrouter_model", ""),
+            jev_enabled=bool(get("jev_enabled", False)),
+            jev_api_key=str(get("jev_api_key", "")),
+            jev_api_host=str(get("jev_api_host", "")),
+            jev_model=str(get("jev_model", "")),
+            custom_enabled=bool(get("custom_enabled", False)),
+            custom_api_key=str(get("custom_api_key", "")),
+            custom_api_host=str(get("custom_api_host", "")),
+            custom_model=str(get("custom_model", "")),
             azure_openai_enabled=get("azure_openai_enabled", True),
             azure_openai_api_key=get("azure_openai_api_key", ""),
             azure_openai_endpoint=get("azure_openai_endpoint", ""),

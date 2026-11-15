@@ -28,6 +28,14 @@
   "proxy_username": "",
   "proxy_password": "",
   "proxy_bypass": "localhost,127.0.0.1",
+  "jev_enabled": false,
+  "jev_api_key": "",
+  "jev_api_host": "",
+  "jev_model": "",
+  "custom_enabled": false,
+  "custom_api_key": "",
+  "custom_api_host": "",
+  "custom_model": "",
 
   "____SECTION_MODE____": "── Trading mode ──────────────────────────────────────────────────────",
 

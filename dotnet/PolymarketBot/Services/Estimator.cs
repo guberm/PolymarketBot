@@ -264,6 +264,8 @@ public sealed class Estimator
         if (_config.OpenAiEnabled    && !string.IsNullOrEmpty(_config.OpenAiApiKey))    out_.Add("openai");
         if (_config.GeminiEnabled    && !string.IsNullOrEmpty(_config.GeminiApiKey))    out_.Add("gemini");
         if (_config.OpenRouterEnabled && !string.IsNullOrEmpty(_config.OpenRouterApiKey)) out_.Add("openrouter");
+        if (_config.JevEnabled && !string.IsNullOrEmpty(_config.JevApiKey) && !string.IsNullOrEmpty(_config.JevApiHost)) out_.Add("jev");
+        if (_config.CustomEnabled && !string.IsNullOrEmpty(_config.CustomApiKey) && !string.IsNullOrEmpty(_config.CustomApiHost)) out_.Add("custom");
         if (_config.AzureOpenAiEnabled &&
             !string.IsNullOrEmpty(_config.AzureOpenAiApiKey) &&
             !string.IsNullOrEmpty(_config.AzureOpenAiEndpoint) &&
@@ -277,6 +279,8 @@ public sealed class Estimator
         "openai"       => !string.IsNullOrEmpty(_config.OpenAiModel)     ? _config.OpenAiModel     : "gpt-4o",
         "gemini"       => !string.IsNullOrEmpty(_config.GeminiModel)     ? _config.GeminiModel     : "gemini-2.0-flash",
         "openrouter"   => _config.OpenRouterModel,
+        "jev"          => _config.JevModel,
+        "custom"       => _config.CustomModel,
         "azure_openai" => _config.AzureOpenAiDeployment,
         WeatherEstimator.ProviderName => WeatherEstimator.ModelName,
         _              => _config.AnthropicModel,
@@ -435,6 +439,8 @@ public sealed class Estimator
             "gemini"       => await MakeGeminiRequestAsync(userPrompt, ct),
             "openai"       => await MakeOpenAiCompatRequestAsync("openai", userPrompt, ct),
             "openrouter"   => await MakeOpenAiCompatRequestAsync("openrouter", userPrompt, ct),
+            "jev"          => await MakeOpenAiCompatRequestAsync("jev", userPrompt, ct),
+            "custom"       => await MakeOpenAiCompatRequestAsync("custom", userPrompt, ct),
             "azure_openai" => await MakeOpenAiCompatRequestAsync("azure_openai", userPrompt, ct),
             _              => await MakeAnthropicRequestAsync(userPrompt, ct),
         };
@@ -494,6 +500,13 @@ public sealed class Estimator
             var orHost = string.IsNullOrEmpty(_config.OpenRouterApiHost) ? "https://openrouter.ai" : _config.OpenRouterApiHost.TrimEnd('/');
             url = $"{orHost}/api/v1/chat/completions";
             req.Headers.Add("Authorization", $"Bearer {_config.OpenRouterApiKey}");
+        }
+        else if (provider is "jev" or "custom")
+        {
+            // Generic OpenAI-compatible endpoints (host/key/model from config)
+            var host = (provider == "jev" ? _config.JevApiHost : _config.CustomApiHost).TrimEnd('/');
+            url = $"{host}/v1/chat/completions";
+            req.Headers.Add("Authorization", $"Bearer {(provider == "jev" ? _config.JevApiKey : _config.CustomApiKey)}");
         }
         else  // azure_openai
         {
@@ -602,6 +615,8 @@ public sealed class Estimator
             "gemini"       => ParseGeminiResponse(body),
             "openai"       => ParseOpenAiCompatResponse(body),
             "openrouter"   => ParseOpenAiCompatResponse(body),
+            "jev"          => ParseOpenAiCompatResponse(body),
+            "custom"       => ParseOpenAiCompatResponse(body),
             "azure_openai" => ParseOpenAiCompatResponse(body),
             _              => ParseAnthropicResponse(body),
         };
@@ -703,12 +718,14 @@ public sealed class Estimator
                     Content = new StringContent(body, Encoding.UTF8, "application/json")
                 };
             }
-            else if (provider is "openai" or "openrouter" or "azure_openai")
+            else if (provider is "openai" or "openrouter" or "azure_openai" or "jev" or "custom")
             {
                 var (url, authHeader, authValue) = provider switch
                 {
                     "openai" => ($"{(_config.OpenAiApiHost.TrimEnd('/'))}/v1/chat/completions", "Authorization", $"Bearer {_config.OpenAiApiKey}"),
                     "openrouter" => ($"{(string.IsNullOrEmpty(_config.OpenRouterApiHost) ? "https://openrouter.ai" : _config.OpenRouterApiHost.TrimEnd('/'))}/api/v1/chat/completions", "Authorization", $"Bearer {_config.OpenRouterApiKey}"),
+                    "jev" => ($"{(_config.JevApiHost.TrimEnd('/'))}/v1/chat/completions", "Authorization", $"Bearer {_config.JevApiKey}"),
+                    "custom" => ($"{(_config.CustomApiHost.TrimEnd('/'))}/v1/chat/completions", "Authorization", $"Bearer {_config.CustomApiKey}"),
                     _ => ($"{_config.AzureOpenAiEndpoint.TrimEnd('/')}/openai/deployments/{_config.AzureOpenAiDeployment}/chat/completions?api-version={_config.AzureOpenAiApiVersion}", "api-key", _config.AzureOpenAiApiKey),
                 };
                 var body = JsonSerializer.Serialize(new

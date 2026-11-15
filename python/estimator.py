@@ -1,6 +1,6 @@
 """AI ensemble probability estimation for prediction markets.
 
-Supported providers: anthropic, openai, gemini, openrouter, azure_openai
+Supported providers: anthropic, openai, gemini, openrouter, azure_openai, jev, custom
 
 Multi-provider mode (multi_provider=true):
   Queries every provider that has an API key configured, scores each by
@@ -319,6 +319,10 @@ class Estimator:
             out.append("gemini")
         if c.openrouter_enabled and c.openrouter_api_key:
             out.append("openrouter")
+        if c.jev_enabled and c.jev_api_key and c.jev_api_host:
+            out.append("jev")
+        if c.custom_enabled and c.custom_api_key and c.custom_api_host:
+            out.append("custom")
         if c.azure_openai_enabled and c.azure_openai_api_key and c.azure_openai_endpoint and c.azure_openai_deployment:
             out.append("azure_openai")
         return out
@@ -329,6 +333,8 @@ class Estimator:
         "openai":       "gpt-4o",
         "gemini":       "gemini-2.0-flash",
         "openrouter":   "",
+        "jev":          "",
+        "custom":       "",
         "azure_openai": "",
     }
 
@@ -340,6 +346,8 @@ class Estimator:
             "openai":       c.openai_model,
             "gemini":       c.gemini_model,
             "openrouter":   c.openrouter_model,
+            "jev":          c.jev_model,
+            "custom":       c.custom_model,
             "azure_openai": c.azure_openai_deployment,
             WEATHER_PROVIDER: WEATHER_MODEL,
         }
@@ -426,7 +434,7 @@ class Estimator:
             result = self._call_anthropic(market)
         elif provider == "gemini":
             result = self._call_gemini(market)
-        elif provider in ("openai", "openrouter", "azure_openai"):
+        elif provider in ("openai", "openrouter", "azure_openai", "jev", "custom"):
             result = self._call_openai_compat(market, provider)
         else:
             log.error(f"Unknown AI provider: {provider}")
@@ -523,6 +531,12 @@ class Estimator:
             host = (self.config.openrouter_api_host or "https://openrouter.ai").rstrip("/")
             url = f"{host}/api/v1/chat/completions"
             headers = {"Authorization": f"Bearer {self.config.openrouter_api_key}"}
+        elif provider in ("jev", "custom"):
+            # Generic OpenAI-compatible endpoints (host/key/model from config)
+            host = (self.config.jev_api_host if provider == "jev" else self.config.custom_api_host).rstrip("/")
+            api_key = self.config.jev_api_key if provider == "jev" else self.config.custom_api_key
+            url = f"{host}/v1/chat/completions"
+            headers = {"Authorization": f"Bearer {api_key}"}
         else:  # azure_openai
             endpoint = self.config.azure_openai_endpoint.rstrip("/")
             deployment = self.config.azure_openai_deployment

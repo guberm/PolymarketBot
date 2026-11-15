@@ -1288,6 +1288,18 @@ const CONFIG_SCHEMA = [
     { key: 'openrouter_api_host', label: 'API Host', ru: 'API хост', type: 'text' },
     { key: 'openrouter_model',    label: 'Model',    ru: 'Модель',   type: 'model-select', loadFrom: 'openrouter' },
   ]},
+  { section: 'JEV', ru: 'JEV', fields: [
+    { key: 'jev_enabled',  label: 'Enabled',  ru: 'Включён',   type: 'bool' },
+    { key: 'jev_api_key',  label: 'API Key',  ru: 'API ключ', type: 'password' },
+    { key: 'jev_api_host', label: 'API Host', ru: 'API хост', type: 'text' },
+    { key: 'jev_model',    label: 'Model',    ru: 'Модель',   type: 'text' },
+  ]},
+  { section: 'CUSTOM', ru: 'СВОЙ ПРОВАЙДЕР (OpenAI-совместимый)', fields: [
+    { key: 'custom_enabled',  label: 'Enabled',  ru: 'Включён',   type: 'bool' },
+    { key: 'custom_api_key',  label: 'API Key',  ru: 'API ключ', type: 'password' },
+    { key: 'custom_api_host', label: 'API Host (base URL)', ru: 'Хост (base URL)', type: 'text' },
+    { key: 'custom_model',    label: 'Model',    ru: 'Модель',   type: 'text' },
+  ]},
   { section: 'AZURE OPENAI', ru: 'AZURE OPENAI', fields: [
     { key: 'azure_openai_enabled',     label: 'Enabled',      ru: 'Включён',       type: 'bool' },
     { key: 'azure_openai_api_key',     label: 'API Key',      ru: 'API ключ',      type: 'password' },
@@ -1406,6 +1418,8 @@ const CONFIG_SCHEMA = [
 let currentConfig = {}
 
 const PROVIDER_NAMES = {
+  jev:    'Jev (custom OpenAI-compatible)',
+  custom: 'Custom (OpenAI-compatible)',
   anthropic:    'Anthropic (Claude)',
   openai:       'OpenAI',
   gemini:       'Google Gemini',
@@ -1419,6 +1433,8 @@ const PROVIDER_KEY_FIELDS = {
   gemini:       'gemini_api_key',
   openrouter:   'openrouter_api_key',
   azure_openai: 'azure_openai_api_key',
+  jev:          'jev_api_key',
+  custom:       'custom_api_key',
 }
 
 const PROVIDER_HOST_FIELDS = {
@@ -1426,6 +1442,8 @@ const PROVIDER_HOST_FIELDS = {
   gemini:       'gemini_api_host',
   openrouter:   'openrouter_api_host',
   azure_openai: 'azure_openai_endpoint',
+  jev:          'jev_api_host',
+  custom:       'custom_api_host',
 }
 
 function updateProviderVisibility(form, provider) {
