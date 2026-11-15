@@ -251,8 +251,16 @@ var proxyEnv = Environment.GetEnvironmentVariable("HTTPS_PROXY")
     ?? Environment.GetEnvironmentVariable("HTTP_PROXY");
 if (!string.IsNullOrEmpty(proxyEnv))
 {
-    httpHandler.Proxy = new WebProxy(new Uri(proxyEnv));
     var proxyUri = new Uri(proxyEnv);
+    var webProxy = new WebProxy(proxyUri);
+    if (!string.IsNullOrEmpty(proxyUri.UserInfo))
+    {
+        var sep = proxyUri.UserInfo.IndexOf(':');
+        webProxy.Credentials = new NetworkCredential(
+            sep < 0 ? proxyUri.UserInfo : proxyUri.UserInfo[..sep],
+            sep < 0 ? "" : proxyUri.UserInfo[(sep + 1)..]);
+    }
+    httpHandler.Proxy = webProxy;
     log.LogInformation("All bot HTTP traffic via proxy {Host}:{Port} (from environment)", proxyUri.Host, proxyUri.Port);
 }
 using var httpClient = new HttpClient(httpHandler);
