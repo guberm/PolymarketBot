@@ -243,8 +243,17 @@ var recheckPersistedHalt = snapshot is not null && portfolio.IsHalted && portfol
 var httpHandler = new SocketsHttpHandler();
 if (!string.IsNullOrEmpty(config.PolymarketProxyUrl))
 {
-    httpHandler.Proxy = new WebProxy(new Uri(config.PolymarketProxyUrl));
-    log.LogInformation("All bot HTTP traffic via bridge proxy {Proxy}", config.PolymarketProxyUrl);
+    var proxyUri = new Uri(config.PolymarketProxyUrl);
+    var webProxy = new WebProxy(proxyUri);
+    if (!string.IsNullOrEmpty(proxyUri.UserInfo))
+    {
+        var sep = proxyUri.UserInfo.IndexOf(':');
+        webProxy.Credentials = new NetworkCredential(
+            sep < 0 ? proxyUri.UserInfo : proxyUri.UserInfo[..sep],
+            sep < 0 ? "" : proxyUri.UserInfo[(sep + 1)..]);
+    }
+    httpHandler.Proxy = webProxy;
+    log.LogInformation("All bot HTTP traffic via bridge proxy {Host}:{Port}", proxyUri.Host, proxyUri.Port);
 }
 using var httpClient = new HttpClient(httpHandler);
 // Explicit UA: an empty User-Agent is a strong Cloudflare bot signal on
