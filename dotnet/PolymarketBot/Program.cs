@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using Microsoft.Extensions.Logging;
+using System.Net;
 using PolymarketBot;
 using PolymarketBot.Models;
 using PolymarketBot.Services;
@@ -239,7 +240,13 @@ var recheckPersistedHalt = snapshot is not null && portfolio.IsHalted && portfol
 
 // ── Services ────────────────────────────────────────────────────
 
-using var httpClient = new HttpClient();
+var httpHandler = new SocketsHttpHandler();
+if (!string.IsNullOrEmpty(config.PolymarketProxyUrl))
+{
+    httpHandler.Proxy = new WebProxy(new Uri(config.PolymarketProxyUrl));
+    log.LogInformation("All bot HTTP traffic via bridge proxy {Proxy}", config.PolymarketProxyUrl);
+}
+using var httpClient = new HttpClient(httpHandler);
 // Explicit UA: an empty User-Agent is a strong Cloudflare bot signal on
 // gamma/clob endpoints and contributes to 406 WAF rejections.
 httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("PolymarketBot/1.7.0 (github.com/guberm/PolymarketBot)");

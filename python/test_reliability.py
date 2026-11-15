@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import smtplib
 import tempfile
 import threading
@@ -512,6 +513,18 @@ class ReliabilityTests(unittest.TestCase):
             self.assertTrue(trader.recover_pending_orders(portfolio))
             self.assertEqual(trader.journal.pending(), [])
             self.assertEqual(portfolio.positions, [])
+
+    def test_bridge_proxy_config_parsed(self):
+        old = os.environ.pop("POLYMARKET_PROXY_URL", None)
+        try:
+            self.assertEqual(BotConfig.from_env().polymarket_proxy_url, "")
+            os.environ["POLYMARKET_PROXY_URL"] = "http://127.0.0.1:8888"
+            self.assertEqual(BotConfig.from_env().polymarket_proxy_url, "http://127.0.0.1:8888")
+        finally:
+            if old is not None:
+                os.environ["POLYMARKET_PROXY_URL"] = old
+            else:
+                os.environ.pop("POLYMARKET_PROXY_URL", None)
 
     def test_transport_breaker_opens_after_repeated_unknown_outcomes(self):
         trader = LiveTrader.__new__(LiveTrader)

@@ -10,6 +10,7 @@ Usage:
 import argparse
 import atexit
 import logging
+import os
 import signal
 import sys
 import time
@@ -130,6 +131,15 @@ def main():
 
     config = BotConfig.from_env()
     con = args.console  # shorthand for console flag
+
+    # Bridge proxy (VPS in an allowed region): route all bot HTTP through it.
+    # requests + httpx (incl. py_clob_client_v2) honor these env vars.
+    if config.polymarket_proxy_url:
+        os.environ["HTTP_PROXY"] = config.polymarket_proxy_url
+        os.environ["HTTPS_PROXY"] = config.polymarket_proxy_url
+        logging.getLogger("bot.main").info(
+            "All bot HTTP traffic via bridge proxy %s", config.polymarket_proxy_url
+        )
 
     # CLI args override env vars
     if args.max_position_pct is not None:

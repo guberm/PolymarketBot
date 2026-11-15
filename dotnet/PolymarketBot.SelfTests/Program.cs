@@ -755,6 +755,18 @@ using (var breakerHttp = new HttpClient(breakerHandler))
 }
 Directory.Delete(breakerDir, true);
 
+// Bridge proxy config: url parses into the shared HttpClient handler.
+var proxyConfig = new BotConfig { PolymarketProxyUrl = "http://127.0.0.1:8888" };
+var proxyHandler = new SocketsHttpHandler();
+if (!string.IsNullOrEmpty(proxyConfig.PolymarketProxyUrl))
+    proxyHandler.Proxy = new WebProxy(new Uri(proxyConfig.PolymarketProxyUrl));
+if (proxyHandler.Proxy is null) throw new Exception("Bridge proxy handler must carry the WebProxy");
+using (var proxied = new HttpClient(proxyHandler))
+{
+    if (proxied.DefaultRequestHeaders.UserAgent.Count == 0)
+        proxied.DefaultRequestHeaders.UserAgent.ParseAdd("PolymarketBot/selftest");
+}
+
 Console.WriteLine("Self-tests passed");
 
 sealed class StaticResponseHandler(string body) : HttpMessageHandler
