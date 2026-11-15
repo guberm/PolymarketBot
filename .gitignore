@@ -53,3 +53,7 @@ transcript.md
 # *.cmd
 
 .codegraph/
+
+# per-machine dashboard UI state and local backups
+dashboard-settings.json
+*.bak
