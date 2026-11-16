@@ -888,6 +888,10 @@ def main():
 
                 # Generate signal
                 signal_obj = portfolio.generate_signal(market, estimate)
+                if signal_obj is not None:
+                    # Audit WHY the ensemble disagrees with the market before committing.
+                    from trade_analysis import log_analysis
+                    log_analysis(log, market, estimate, config.data_dir)
                 if signal_obj is None:
                     yes_edge, no_edge = calculate_net_edges(market, estimate.fair_probability, config.entry_price_buffer)
                     uncertainty = max(0.0, estimate.confidence * config.uncertainty_edge_multiplier)
