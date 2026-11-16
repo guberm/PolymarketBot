@@ -859,6 +859,13 @@ public sealed class Estimator
             }
             return true;
         }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            // HttpClient.Timeout (100 s) during validation — a hung provider must
+            // not crash startup; the runtime circuit breaker will handle it later.
+            _log.LogWarning("{Provider} validation timed out (100 s) — continuing", provider);
+            return true;
+        }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _log.LogWarning("API key validation network error: {Error} — continuing", ex.Message);
