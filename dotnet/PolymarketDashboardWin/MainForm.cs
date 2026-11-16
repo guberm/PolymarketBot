@@ -167,9 +167,9 @@ public sealed class MainForm : Form
     private void RefreshStatus()
     {
         var dotnet = Process.GetProcessesByName("dotnet");
-        _lblProcess.Text = dotnet.Length > 0
-            ? $"RUNNING (pid {dotnet[0].Id}, since {dotnet[0].StartTime:HH:mm})"
-            : "STOPPED";
+        // StartTime throws Win32Exception (access denied) when the bot was
+        // launched from another session — pid display only.
+        _lblProcess.Text = dotnet.Length > 0 ? $"RUNNING (pid {dotnet[0].Id})" : "STOPPED";
         _lblProcess.ForeColor = dotnet.Length > 0 ? Color.Green : Color.Red;
 
         try
