@@ -385,6 +385,46 @@ Console.CancelKeyPress += (_, e) =>
     cts.Cancel();
 };
 
+// ── Manual exit-all: market-sell every open position, save state, stop ──
+if (args.Contains("--exit-all"))
+{
+    if (trader is not LiveTrader ltExit)
+    {
+        log.LogError("--exit-all requires live trading");
+        return 4;
+    }
+    var toClose = portfolio.Positions.ToList();
+    log.LogInformation("--exit-all: closing {Count} position(s)...", toClose.Count);
+    var closed = 0;
+    foreach (var pos in toClose)
+    {
+        var pnlPct = pos.EntryPrice > 0 ? pos.UnrealizedPnl / (pos.Shares * pos.EntryPrice) : 0.0;
+        var es = new ExitSignal
+        {
+            Position = pos,
+            ExitReason = "manual_exit",
+            CurrentPrice = pos.CurrentPrice,
+            UnrealizedPnl = pos.UnrealizedPnl,
+            PnlPct = pnlPct,
+        };
+        var trade = await ltExit.ExecuteSellAsync(es, portfolio, cts.Token);
+        if (trade is not null)
+        {
+            closed++;
+            log.LogInformation("EXITED {Question}", pos.Question);
+        }
+        else
+        {
+            log.LogError("FAILED to exit {Question} — check pending-orders journal", pos.Question);
+        }
+    }
+    PersistenceService.SaveSnapshot(portfolio.Snapshot(), config.DataDir);
+    log.LogInformation("--exit-all done: {Closed}/{Total} closed. Bankroll ${Bankroll:F2}",
+        closed, toClose.Count, portfolio.Bankroll);
+    notifier.NotifyHalted($"Manual exit-all: {closed}/{toClose.Count} closed", portfolio);
+    return closed == toClose.Count ? 0 : 5;
+}
+
 var cycle = 0;
 var fatalExitCode = 0;
 
