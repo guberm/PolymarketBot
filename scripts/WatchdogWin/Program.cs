@@ -22,16 +22,16 @@ try
     var proxy = $"{cfg["proxy_type"]}://{cfg["proxy_username"]}:{cfg["proxy_password"]}@{cfg["proxy_host"]}:{cfg["proxy_port"]}";
     Environment.SetEnvironmentVariable("HTTPS_PROXY", proxy);
     Environment.SetEnvironmentVariable("HTTP_PROXY", proxy);
+    // optional launch: polymarket_bot_config.json "watchdog_enabled": false
+    // makes the watchdog exit immediately (checked first, before anything else).
+    bool enabled = true;
+    try { enabled = JsonNode.Parse(File.ReadAllText(Path.Combine(repo, "polymarket_bot_config.json")))!["watchdog_enabled"]?.GetValue<bool>() ?? true; } catch { }
+    if (!enabled) { W("watchdog disabled via config - exiting"); return; }
     W("watchdog started (exe)");
     while (true)
     {
         try
         {
-            // optional launch: polymarket_bot_config.json "watchdog_enabled": false
-            // turns the watchdog into a passive no-op (checked every poll).
-            bool enabled = true;
-            try { enabled = JsonNode.Parse(File.ReadAllText(Path.Combine(repo, "polymarket_bot_config.json")))!["watchdog_enabled"]?.GetValue<bool>() ?? true; } catch { }
-            if (!enabled) { W("watchdog disabled via config - idle"); Thread.Sleep(300_000); continue; }
             if (Process.GetProcessesByName("dotnet").Length > 0) { Thread.Sleep(300_000); continue; }
             try { File.Delete(Path.Combine(repo, "data", "bot.lock")); } catch { }
             Process.Start(new ProcessStartInfo("cmd.exe",
