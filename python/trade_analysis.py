@@ -97,6 +97,31 @@ def analyze(
     return providers, verdicts
 
 
+def stable_consensus(
+    scored: list[tuple],
+    history: Optional[dict[str, list[float]]],
+    threshold: float = UNSTABLE_STD,
+) -> tuple[list[tuple], list[str]]:
+    """Consensus filter (mirror of .NET StableConsensus): drop providers whose
+    recent estimates for THIS market swing more than `threshold` (std).
+    `scored` is a list of (provider, mean) tuples ordered by score.
+    Degenerate case (everyone unstable) falls back to keeping everyone."""
+    consensus: list[tuple] = []
+    excluded: list[str] = []
+    for provider, mean in scored:
+        hist = (history or {}).get(provider)
+        if hist and len(hist) >= 2:
+            m = sum(hist) / len(hist)
+            std = math.sqrt(sum((x - m) ** 2 for x in hist) / (len(hist) - 1))
+            if std > threshold:
+                excluded.append(f"{provider}(std={std:.2f})")
+                continue
+        consensus.append((provider, mean))
+    if not consensus and scored:
+        return list(scored), []
+    return consensus, excluded
+
+
 def recent_history(data_dir: str, condition_id: str, take: int = 5) -> dict[str, list[float]]:
     """Load the last `take` estimates per provider for this market from estimates.jsonl."""
     result: dict[str, list[float]] = {}

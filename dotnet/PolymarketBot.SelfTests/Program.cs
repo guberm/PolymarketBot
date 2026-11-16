@@ -755,6 +755,29 @@ using (var breakerHttp = new HttpClient(breakerHandler))
 }
 Directory.Delete(breakerDir, true);
 
+// ── TradeAnalysis.StableConsensus: UNSTABLE provider excluded from consensus ──
+{
+    var scored = new List<(string Provider, double Mean)>
+    {
+        ("anthropic", 0.04), ("azure_openai", 0.39), ("custom", 0.20), ("jev", 0.05),
+    };
+    var history = new Dictionary<string, List<double>>
+    {
+        ["custom"] = new() { 0.39, 0.22, 0.39, 0.20 },
+        ["anthropic"] = new() { 0.04, 0.05, 0.04, 0.05 },
+    };
+    var (consensus, excluded) = TradeAnalysis.StableConsensus(scored, history);
+    if (excluded.Count != 1 || !excluded[0].StartsWith("custom"))
+        throw new Exception("StableConsensus exclusion failed");
+    if (consensus.Count != 3 || consensus.Any(c => c.Provider == "custom"))
+        throw new Exception("StableConsensus kept an unstable provider");
+    var allUnstable = new Dictionary<string, List<double>>();
+    foreach (var k in scored.Select(s => s.Provider)) allUnstable[k] = new() { 0.1, 0.9, 0.1, 0.9 };
+    var (cons2, ex2) = TradeAnalysis.StableConsensus(scored, allUnstable);
+    if (cons2.Count != 4 || ex2.Count != 0)
+        throw new Exception("StableConsensus degenerate fallback failed");
+}
+
 // ── TradeAnalysis: echo / independent / unstable classification + verdicts ──
 {
     var estimates = new Dictionary<string, double>

@@ -81,6 +81,38 @@ public static class TradeAnalysis
         return (providers, verdicts);
     }
 
+    /// <summary>
+    /// Consensus filter: drop providers whose recent estimates for THIS market
+    /// swing more than <paramref name="threshold"/> (std) — their draws turn the
+    /// trimmed mean into an artifact of one volatile cycle (Clancy case).
+    /// Degenerate case (everyone unstable) falls back to keeping everyone.
+    /// </summary>
+    public static (List<(string Provider, double Mean)> Consensus, List<string> Excluded) StableConsensus(
+        IReadOnlyList<(string Provider, double Mean)> scored,
+        IReadOnlyDictionary<string, List<double>>? history,
+        double threshold = UnstableStd)
+    {
+        var consensus = new List<(string Provider, double Mean)>();
+        var excluded = new List<string>();
+        foreach (var (provider, mean) in scored)
+        {
+            if (history is not null && history.TryGetValue(provider, out var hist) && hist.Count >= 2)
+            {
+                var m = hist.Average();
+                var std = Math.Sqrt(hist.Sum(x => (x - m) * (x - m)) / (hist.Count - 1));
+                if (std > threshold)
+                {
+                    excluded.Add($"{provider}(std={std:F2})");
+                    continue;
+                }
+            }
+            consensus.Add((provider, mean));
+        }
+        if (consensus.Count == 0 && scored.Count > 0)
+            return (scored.ToList(), new List<string>());
+        return (consensus, excluded);
+    }
+
     /// <summary>Load the last <paramref name="take"/> estimates per provider for this market from the journal.</summary>
     public static Dictionary<string, List<double>> RecentHistory(string dataDir, string conditionId, int take = 5)
     {

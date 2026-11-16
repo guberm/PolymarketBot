@@ -215,6 +215,21 @@ public sealed class Estimator
 
         var winner = scored[0].Provider;
 
+        // Consensus excludes UNSTABLE providers: one whose recent estimates for
+        // this market swing >8pp turns the trimmed mean into an artifact of a
+        // single draw (Clancy case). The full per-provider dict still goes to
+        // the journal for calibration and the audit.
+        var (consensus, excludedUnstable) = TradeAnalysis.StableConsensus(
+            scored.Select(s => (s.Provider, s.Mean)).ToList(),
+            TradeAnalysis.RecentHistory(_config.DataDir, market.ConditionId));
+        if (excludedUnstable.Count > 0)
+        {
+            _log.LogInformation("Consensus excludes UNSTABLE provider(s): {Excluded} — consensus from {Count} of {Total}",
+                string.Join(", ", excludedUnstable), consensus.Count, scored.Count);
+            if (consensus.Count > 0)
+                winner = consensus[0].Provider;
+        }
+
         // Log breakdown
         var parts = scored.Select(s =>
             $"{(s.Provider == winner ? "⭐" : "  ")}{s.Provider}={s.Mean:P0}(±{s.Std:F2},s={s.Score:F3})");
@@ -222,17 +237,17 @@ public sealed class Estimator
             Truncate(market.Question, 35), string.Join(" | ", parts));
 
         // Final estimate: trimmed mean of per-provider means (each provider counts equally)
-        var providerMeans = scored.Select(s => s.Mean).ToList();
+        var providerMeans = consensus.Select(s => s.Mean).ToList();
         var weights = CalibrationWeights.Calculate(_calibrationStats,
-            scored.Select(item => item.Provider).ToList(), _config.CalibrationMinSamples,
+            consensus.Select(item => item.Provider).ToList(), _config.CalibrationMinSamples,
             _config.CalibrationShrinkage, _config.CalibrationMaxProviderWeight);
         double? weightedProbability = weights.Count == 0 ? null
-            : scored.Sum(item => item.Mean * weights[item.Provider]);
+            : consensus.Sum(item => item.Mean * weights[item.Provider]);
         if (weights.Count > 0)
             _log.LogInformation("Calibration weights: {Weights}",
                 string.Join(", ", weights.Select(item => $"{item.Key}={item.Value:P0}")));
         return BuildEstimate(market, providerMeans, totalInput, totalOutput, firstReasoning,
-            note: $"multi({scored.Count} providers, ⭐{winner})", apiCostUsd: totalCost,
+            note: $"multi({consensus.Count} of {scored.Count} providers, ⭐{winner})", apiCostUsd: totalCost,
             providerEstimates: scored.ToDictionary(item => item.Provider, item => item.Mean),
             fairProbabilityOverride: weightedProbability);
     }

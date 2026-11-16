@@ -1,6 +1,24 @@
 """Tests for the trade-rationale audit (mirror of .NET self-test fixture)."""
 import pytest
-from trade_analysis import analyze
+from trade_analysis import analyze, stable_consensus
+
+
+def test_stable_consensus_excludes_unstable():
+    scored = [("anthropic", 0.04), ("azure_openai", 0.39), ("custom", 0.20), ("jev", 0.05)]
+    history = {
+        "custom": [0.39, 0.22, 0.39, 0.20],
+        "anthropic": [0.04, 0.05, 0.04, 0.05],
+    }
+    consensus, excluded = stable_consensus(scored, history)
+    assert len(excluded) == 1 and excluded[0].startswith("custom")
+    assert len(consensus) == 3 and all(p != "custom" for p, _ in consensus)
+
+
+def test_stable_consensus_degenerate_fallback():
+    scored = [("a", 0.1), ("b", 0.4)]
+    hist = {k: [0.1, 0.9, 0.1, 0.9] for k, _ in scored}
+    consensus, excluded = stable_consensus(scored, hist)
+    assert consensus == scored and excluded == []
 
 
 CLANCY_ESTIMATES = {"anthropic": 0.04, "azure_openai": 0.39, "custom": 0.20, "jev": 0.05}

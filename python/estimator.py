@@ -274,6 +274,22 @@ class Estimator:
         scored.sort(key=lambda x: x[3], reverse=True)  # highest score first
         winner = scored[0][0]
 
+        # Consensus excludes UNSTABLE providers (mirror of .NET): one whose recent
+        # estimates for this market swing >8pp turns the trimmed mean into an
+        # artifact of a single draw. The full per-provider dict still goes to the
+        # journal for calibration and the audit.
+        from trade_analysis import recent_history as _rh, stable_consensus as _sc
+        _history = _rh(self.config.data_dir, market.condition_id)
+        consensus, excluded_unstable = _sc(
+            [(provider, mean) for provider, mean, _, _ in scored], _history)
+        if excluded_unstable:
+            log.info(
+                "Consensus excludes UNSTABLE provider(s): %s - consensus from %d of %d",
+                ", ".join(excluded_unstable), len(consensus), len(scored),
+            )
+            if consensus:
+                winner = consensus[0][0]
+
         # ── Build breakdown log ────────────────────────────────────────────
         parts = []
         for provider, mean, std, score in scored:
@@ -282,18 +298,18 @@ class Estimator:
         breakdown = " | ".join(parts)
         log.info(f"Multi-provider [{market.question[:40]}]: consensus={statistics.mean(all_probs):.0%} | {breakdown}")
 
-        # ── Final estimate: trimmed mean across ALL provider means ─────────
-        # Use per-provider means (not raw calls) so each provider counts equally
-        provider_means = [m for _, m, _, _ in scored]
+        # ── Final estimate: trimmed mean across CONSENSUS provider means ────
+        # Per-provider means (not raw calls) so each provider counts equally
+        provider_means = [mean for _, mean in consensus]
         weights = calibration_weights(
             self._calibration_stats,
-            [provider for provider, _, _, _ in scored],
+            [provider for provider, _ in consensus],
             self.config.calibration_min_samples,
             self.config.calibration_shrinkage,
             self.config.calibration_max_provider_weight,
         )
         weighted_probability = (
-            sum(mean * weights[provider] for provider, mean, _, _ in scored)
+            sum(mean * weights[provider] for provider, mean in consensus)
             if weights else None
         )
         if weights:
@@ -303,7 +319,7 @@ class Estimator:
 
         return self._build_estimate(
             market, provider_means, total_input, total_output, first_reasoning,
-            note=f"multi({len(scored)} providers, winner={winner})", api_cost_usd=total_cost,
+            note=f"multi({len(consensus)} of {len(scored)} providers, winner={winner})", api_cost_usd=total_cost,
             provider_estimates={provider: mean for provider, mean, _, _ in scored},
             fair_probability_override=weighted_probability,
         )
