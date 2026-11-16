@@ -105,6 +105,7 @@ class Estimator:
         """Run estimation. Uses multi-provider mode if configured."""
         started = time.monotonic()
         self.last_api_cost_usd = 0.0
+        self.last_rejected_estimate: Optional[Estimate] = None
         result = self._estimate_multi(market) if self.config.multi_provider else self._estimate_single(market)
         if self._weather_estimator is not None:
             result = self._merge_weather(market, result)
@@ -385,6 +386,28 @@ class Estimator:
             log.info(
                 f"SKIP (low confidence): {market.question[:50]}... "
                 f"std={confidence:.3f} > max={self.config.max_estimate_std:.3f}"
+            )
+            # Stash the rejected candidate so the caller can record it for
+            # calibration (same behavior as the .NET mirror).
+            self.last_rejected_estimate = Estimate(
+                market_condition_id=market.condition_id,
+                question=market.question,
+                fair_probability=fair_prob,
+                raw_estimates=raw_estimates,
+                confidence=confidence,
+                reasoning_summary=first_reasoning,
+                input_tokens_used=total_input,
+                output_tokens_used=total_output,
+                api_cost_usd=api_cost_usd,
+                provider_estimates=provider_estimates or {},
+                prompt_version=PROMPT_VERSION,
+                prompt_sha256=hashlib.sha256(
+                    (SYSTEM_PROMPT + "\n\n" + _build_user_prompt(market)).encode("utf-8")
+                ).hexdigest(),
+                provider_models={
+                    provider: self._get_model(provider)
+                    for provider in (provider_estimates or {})
+                },
             )
             return None
 

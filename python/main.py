@@ -848,6 +848,14 @@ def main():
                 if config.llm_cost_tracking_enabled:
                     portfolio.record_api_cost_usd(estimator.last_api_cost_usd)
                 if estimate is None:
+                    rejected = getattr(estimator, "last_rejected_estimate", None)
+                    if rejected is not None:
+                        append_estimate_evaluation(
+                            market, rejected, config.data_dir,
+                            "multi" if config.multi_provider else config.ai_provider,
+                            "skip", "no_confidence",
+                            track_watch=False, run_id=run_id, cycle_id=f"{run_id}:{cycle}",
+                        )
                     log.info(f"  [{i}/{len(eligible)}] SKIP (no usable estimate)")
                     if con:
                         print(f"[{ts()}]   [{i:>2}/{len(eligible)}] -> {YELLOW}SKIP (no usable estimate){RESET}")
