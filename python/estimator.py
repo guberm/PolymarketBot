@@ -771,6 +771,25 @@ class Estimator:
                     return False
                 return True
 
+            elif provider in ("jev", "custom"):
+                if provider == "jev":
+                    host = (self.config.jev_api_host or "").rstrip("/")
+                    url = f"{host}/v1/models"
+                    auth_headers = {"Authorization": f"Bearer {self.config.jev_api_key}"}
+                    resp = requests.get(url, headers=auth_headers, timeout=10)
+                else:
+                    host = (self.config.custom_api_host or "").rstrip("/")
+                    url = f"{host}/v1/chat/completions"
+                    resp = requests.post(
+                        url,
+                        json={"model": self._get_model(provider), "messages": [{"role": "user", "content": "hi"}], "max_tokens": 1},
+                        headers={"Authorization": f"Bearer {self.config.custom_api_key}", "Content-Type": "application/json"},
+                        timeout=10,
+                    )
+                if resp.status_code in (401, 403):
+                    return False
+                return True
+
             elif provider == "gemini":
                 host = (self.config.gemini_api_host or "https://generativelanguage.googleapis.com").rstrip("/")
                 model = self._get_model("gemini")
