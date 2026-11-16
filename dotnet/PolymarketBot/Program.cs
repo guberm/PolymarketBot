@@ -268,6 +268,15 @@ using var httpClient = new HttpClient(httpHandler);
 // proxy; HTTP/1.1 is accepted everywhere this bot talks to.
 httpClient.DefaultRequestVersion = HttpVersion.Version11;
 httpClient.DefaultVersionPolicy = HttpVersionPolicy.RequestVersionExact;
+// Geoblock probe on a separate client (same proxied handler) with a browser UA:
+// Polymarket's geo service served a stale/misfiled region to the bot's own UA
+// (observed live: curl→FI/18 while bot-UA→CA/ON in the same minute).
+using var geoHttpClient = new HttpClient(httpHandler);
+geoHttpClient.DefaultRequestVersion = HttpVersion.Version11;
+geoHttpClient.DefaultVersionPolicy = HttpVersionPolicy.RequestVersionExact;
+geoHttpClient.Timeout = TimeSpan.FromSeconds(30);
+geoHttpClient.DefaultRequestHeaders.UserAgent.ParseAdd(
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36");
 // Explicit UA: an empty User-Agent is a strong Cloudflare bot signal on
 // gamma/clob endpoints and contributes to 406 WAF rejections.
 httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("PolymarketBot/1.8.0 (github.com/guberm/PolymarketBot)");
@@ -287,7 +296,7 @@ if (config.LiveTrading)
     {
         try
         {
-            geoblock = await TradingSafety.CheckGeoblockAsync(httpClient, cts.Token);
+            geoblock = await TradingSafety.CheckGeoblockAsync(geoHttpClient, cts.Token);
         }
         catch (Exception ex) when (++netFailures < 3 && !cts.Token.IsCancellationRequested)
         {
