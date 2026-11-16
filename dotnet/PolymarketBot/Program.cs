@@ -1078,6 +1078,10 @@ while (!cts.Token.IsCancellationRequested)
 
                 if (bestEdge > config.MinEdge)
                 {
+                    // Edge passed but the position is undersized — audit still, these
+                    // are the near-misses calibration wants to see.
+                    TradeAnalysis.LogAnalysis(log, market, estimate, config.DataDir);
+
                     // Edge exists but Kelly size is below 5-token CLOB minimum or MinTradeUsd
                     var tokenPrice = yesEdge >= noEdge
                         ? Math.Min(market.OutcomeYesPrice + config.EntryPriceBuffer, 0.99)

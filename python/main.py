@@ -896,6 +896,11 @@ def main():
                     yes_edge, no_edge = calculate_net_edges(market, estimate.fair_probability, config.entry_price_buffer)
                     uncertainty = max(0.0, estimate.confidence * config.uncertainty_edge_multiplier)
                     best_edge = max(yes_edge, no_edge) - uncertainty
+                    if best_edge > config.min_edge:
+                        # Edge passed but the position is undersized (kelly_or_clob_min) —
+                        # audit still: these near-misses are what calibration wants to see.
+                        from trade_analysis import log_analysis as _la
+                        _la(log, market, estimate, config.data_dir)
                     log.info(
                         f"  [{i}/{len(eligible)}] SKIP (no conservative edge): "
                         f"fair={estimate.fair_probability:.1%} vs market={market.outcome_yes_price:.1%} "
