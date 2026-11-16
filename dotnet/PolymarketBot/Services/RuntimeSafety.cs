@@ -212,12 +212,23 @@ public sealed class InstanceLock : IDisposable
                 return cmdline.Contains("polymarketbot") || cmdline.Contains("main.py");
             }
             var process = Process.GetProcessById(pid);
+            // Pid-recycle guard: the pid must still belong to a bot process.
+            if (!process.ProcessName.StartsWith("dotnet", StringComparison.OrdinalIgnoreCase)
+                && process.ProcessName != "PolymarketBot")
+                return false;
             return !process.HasExited;
+        }
+        catch (ArgumentException)
+        {
+            // No process with that pid — the owner is dead, the lock is stale.
+            return false;
         }
         catch (Exception)
         {
-            try { return File.GetLastWriteTimeUtc(_path) > DateTime.UtcNow.AddSeconds(-5); }
-            catch (Exception) { return false; }
+            // Cannot determine (access denied across sessions etc.) — assume ALIVE.
+            // A false "dead" steals the lock and causes double trading; a false
+            // "alive" only delays a legitimate restart (delete bot.lock manually).
+            return true;
         }
     }
 }

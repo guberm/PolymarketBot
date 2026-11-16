@@ -196,7 +196,13 @@ class InstanceLock:
                 import ctypes
                 handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
                 if not handle:
-                    return False
+                    err = ctypes.windll.kernel32.GetLastError()
+                    if err == 5:  # ERROR_ACCESS_DENIED: the owner exists but
+                                  # cannot be queried from this session —
+                                  # assume ALIVE (conservative: stealing the
+                                  # lock causes double trading).
+                        return True
+                    return False  # no such process — stale lock
                 ctypes.windll.kernel32.CloseHandle(handle)
                 return True
             # POSIX: PID-reuse guard — trust the pid only when it is (still) a bot
