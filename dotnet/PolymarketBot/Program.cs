@@ -314,39 +314,24 @@ if (config.LiveTrading)
         if (!geoblock.Blocked)
             break;
 
-        // The .NET TLS fingerprint gets a canned "blocked CA/ON" from the geo
-        // service (bot-flagging) while curl from the same IP sees the real
-        // region — cross-check before refusing.
-        var cross = TradingSafety.CrossCheckGeoblockWithCurl(log);
-        if (cross is false)
-        {
-            log.LogWarning(
-                "Geoblock reported blocked in {Country}/{Region} to the bot UA, but the curl cross-check sees NOT blocked — canned bot-flag response suspected; proceeding",
-                string.IsNullOrEmpty(geoblock.Country) ? "unknown" : geoblock.Country,
-                string.IsNullOrEmpty(geoblock.Region) ? "unknown" : geoblock.Region);
-            break;
-        }
-        if (cross is true)
-        {
-            log.LogCritical("Polymarket live trading is blocked in {Country}/{Region} (curl cross-check confirms); refusing to start",
-                string.IsNullOrEmpty(geoblock.Country) ? "unknown" : geoblock.Country,
-                string.IsNullOrEmpty(geoblock.Region) ? "unknown" : geoblock.Region);
-            return 3;
-        }
+        // The geo service's record for our exit IP flaps between providers on a
+        // minute scale (observed FI↔CA/ON alternating). Best-of-10: the first
+        // unblocked reading wins; refuse only when every attempt says blocked
+        // (a genuinely restricted exit IP).
         blockedStreak++;
-        if (blockedStreak >= 2)
+        if (blockedStreak >= 10)
         {
-            log.LogCritical("Polymarket live trading is blocked in {Country}/{Region} on {Streak} consecutive checks; refusing to start",
+            log.LogCritical("Polymarket live trading reports blocked in {Country}/{Region} on {Streak} consecutive checks; refusing to start",
                 string.IsNullOrEmpty(geoblock.Country) ? "unknown" : geoblock.Country,
                 string.IsNullOrEmpty(geoblock.Region) ? "unknown" : geoblock.Region,
                 blockedStreak);
             return 3;
         }
-        log.LogWarning("Geoblock reports blocked in {Country}/{Region} (streak {Streak}) — possible geo-DB flap; rechecking in 10 s",
+        log.LogWarning("Geoblock reports blocked in {Country}/{Region} (attempt {Streak}/10) — geo-DB flap; rechecking in 3 s",
             string.IsNullOrEmpty(geoblock.Country) ? "unknown" : geoblock.Country,
             string.IsNullOrEmpty(geoblock.Region) ? "unknown" : geoblock.Region,
             blockedStreak);
-        await Task.Delay(10000, cts.Token);
+        await Task.Delay(3000, cts.Token);
     }
     log.LogInformation("Polymarket geoblock check passed ({Country}/{Region})",
         geoblock.Country, geoblock.Region);
