@@ -300,7 +300,7 @@ function setupIPC() {
       // and auto-restarts it on death. The dashboard only views the log.
       try {
         spawn(watchdogExe, [], { detached: true, stdio: 'ignore' }).unref()
-        return { pid: 0, native: true, output: out.trim() }
+        return { pid: 0, native: true }
       } catch (e) {
         return { error: e.message }
       }
