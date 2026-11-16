@@ -27,6 +27,11 @@ try
     {
         try
         {
+            // optional launch: polymarket_bot_config.json "watchdog_enabled": false
+            // turns the watchdog into a passive no-op (checked every poll).
+            bool enabled = true;
+            try { enabled = JsonNode.Parse(File.ReadAllText(Path.Combine(repo, "polymarket_bot_config.json")))!["watchdog_enabled"]?.GetValue<bool>() ?? true; } catch { }
+            if (!enabled) { W("watchdog disabled via config - idle"); Thread.Sleep(300_000); continue; }
             if (Process.GetProcessesByName("dotnet").Length > 0) { Thread.Sleep(300_000); continue; }
             try { File.Delete(Path.Combine(repo, "data", "bot.lock")); } catch { }
             Process.Start(new ProcessStartInfo("cmd.exe",

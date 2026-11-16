@@ -293,6 +293,11 @@ function setupIPC() {
       activeVpn = { distro: config.vpn_wsl_distro || 'Ubuntu', scriptPath: path.join(__dirname, 'vpn-runner.sh') }
     } else if (opts.mode === 'dotnet') {
       const watchdogExe = 'C:\\Users\\michael.guber\\Desktop\\my repos\\polymarket_bot\\scripts\\WatchdogWin\\bin\\Release\\net8.0\\win-x64\\publish\\PMBWatchdog.exe'
+      // watchdog_enabled in the bot config makes the watchdog optional:
+      // false → the dashboard spawns the bot directly below, no guardian.
+      let watchdogOn = true
+      try { watchdogOn = JSON.parse(fs.readFileSync(path.join(root, 'polymarket_bot_config.json'), 'utf8')).watchdog_enabled !== false } catch {}
+      if (watchdogOn) {
       // Native launch: spawn the watchdog exe directly (scheduled-task /Run is
       // account-bound and fails with Access denied from another user session).
       // The watchdog itself checks dotnet: alive → it just waits; dead → starts
@@ -303,6 +308,7 @@ function setupIPC() {
         return { pid: 0, native: true }
       } catch (e) {
         return { error: e.message }
+      }
       }
       const projDir = path.join(root, 'dotnet', 'PolymarketBot')
       const extraArgs = []
