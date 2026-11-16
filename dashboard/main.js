@@ -2,7 +2,7 @@
 const { app, BrowserWindow, ipcMain, dialog, shell, clipboard } = require('electron')
 const path = require('path')
 const fs = require('fs')
-const { spawn } = require('child_process')
+const { spawn, execFileSync } = require('child_process')
 const { readLastLines } = require('./tail-lines')
 const { buildHistoryPoint, buildBotEnvironment, buildVpnLaunch, connectionMode, parseProcessLogChunk, toWslPath } = require('./dashboard-model')
 
@@ -292,6 +292,15 @@ function setupIPC() {
       ;({ cmd, args, cwd, useShell } = launch)
       activeVpn = { distro: config.vpn_wsl_distro || 'Ubuntu', scriptPath: path.join(__dirname, 'vpn-runner.sh') }
     } else if (opts.mode === 'dotnet') {
+      // Native launch: delegate to the PMBWatchdog scheduled task — it starts
+      // the bot detached (proxy env composed from polymarket_bot_config.json)
+      // and auto-restarts it on death. The dashboard only views the log.
+      try {
+        const out = execFileSync('schtasks', ['/Run', '/TN', 'PMBWatchdog'], { encoding: 'utf8' })
+        return { pid: 0, native: true, output: out.trim() }
+      } catch (e) {
+        return { error: e.message }
+      }
       const projDir = path.join(root, 'dotnet', 'PolymarketBot')
       const extraArgs = []
       if (opts.verbose) extraArgs.push('--verbose')
@@ -430,6 +439,11 @@ function setupIPC() {
 }
 
 function stopBotProcess() {
+  // Native stop: end the watchdog task (so it does not revive the bot), then
+  // kill any running bot processes.
+  try { execFileSync('schtasks', ['/End', '/TN', 'PMBWatchdog'], { encoding: 'utf8' }) } catch {}
+  try { execFileSync('taskkill', ['/F', '/IM', 'dotnet.exe'], { encoding: 'utf8' }) } catch {}
+  botProcess = null
   if (!botProcess || botProcess.killed) return Promise.resolve()
   if (!activeVpn) {
     botProcess.kill('SIGTERM')
@@ -453,6 +467,32 @@ function stopBotProcess() {
 }
 
 // ── App lifecycle ─────────────────────────────────────────────────────────
+// ── pmb-native.out tail (native launches write here, not through spawn) ──
+let nativeLogPos = 0
+let nativeLogBuffer = ''
+setInterval(() => {
+  try {
+    const file = 'C:\\Users\\Public\\pmb-native.out'
+    if (!fs.existsSync(file)) return
+    const size = fs.statSync(file).size
+    let fh
+    try { fh = fs.openSync(file, 'r') } catch { return }
+    try {
+      if (size < nativeLogPos) { nativeLogPos = 0; nativeLogBuffer = '' }  // truncated/restarted
+      const toRead = Math.min(size - nativeLogPos, 200_000)
+      if (toRead <= 0) return
+      const chunk = Buffer.alloc(toRead)
+      const read = fs.readSync(fh, chunk, 0, toRead, nativeLogPos)
+      nativeLogPos += read
+      const text = chunk.toString('utf8').replace(/\0/g, '')
+      if (!text) return
+      const parsed = parseProcessLogChunk(nativeLogBuffer, text, 'INFO')
+      nativeLogBuffer = parsed.remaining
+      if (mainWindow) parsed.entries.forEach(entry => mainWindow.webContents.send('bot-output', entry))
+    } finally { fs.closeSync(fh) }
+  } catch { /* file held mid-write - next tick retries */ }
+}, 2000)
+
 app.whenReady().then(() => {
   dataDir = findDataDir()
   createWindow()
