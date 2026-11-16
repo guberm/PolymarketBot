@@ -212,9 +212,10 @@ public sealed class InstanceLock : IDisposable
                 return cmdline.Contains("polymarketbot") || cmdline.Contains("main.py");
             }
             var process = Process.GetProcessById(pid);
-            // Pid-recycle guard: the pid must still belong to a bot process.
-            if (!process.ProcessName.StartsWith("dotnet", StringComparison.OrdinalIgnoreCase)
-                && process.ProcessName != "PolymarketBot")
+            // Pid-recycle guard: the pid must still belong to a bot-family
+            // process (dotnet host, PolymarketBot.exe, SelfTests runner).
+            var pname = process.ProcessName.ToLowerInvariant();
+            if (!pname.Contains("dotnet") && !pname.Contains("polymarket"))
                 return false;
             return !process.HasExited;
         }
