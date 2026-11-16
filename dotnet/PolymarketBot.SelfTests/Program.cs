@@ -755,6 +755,33 @@ using (var breakerHttp = new HttpClient(breakerHandler))
 }
 Directory.Delete(breakerDir, true);
 
+// ── TradeAnalysis: echo / independent / unstable classification + verdicts ──
+{
+    var estimates = new Dictionary<string, double>
+    {
+        ["anthropic"] = 0.04, ["azure_openai"] = 0.39, ["custom"] = 0.20, ["jev"] = 0.05,
+    };
+    var history = new Dictionary<string, List<double>>
+    {
+        ["custom"] = new() { 0.39, 0.22, 0.39, 0.20 },
+        ["anthropic"] = new() { 0.04, 0.05, 0.04, 0.05 },
+    };
+    var (providers, verdicts) = TradeAnalysis.Analyze(0.385, estimates, history, 78_582, 18_156);
+    var byName = providers.ToDictionary(p => p.Provider);
+    if (byName["azure_openai"].Classification != "ECHO")
+        throw new Exception("TradeAnalysis echo classification failed");
+    if (byName["anthropic"].Classification != "INDEPENDENT" || byName["jev"].Classification != "INDEPENDENT")
+        throw new Exception("TradeAnalysis independent classification failed");
+    if (!byName["custom"].Classification.StartsWith("UNSTABLE"))
+        throw new Exception("TradeAnalysis unstable classification failed");
+    if (!verdicts.Any(v => v.Contains("PRIOR_VS_MARKET")))
+        throw new Exception("TradeAnalysis PRIOR_VS_MARKET verdict failed");
+    if (verdicts.Any(v => v.Contains("THIN_MARKET")))
+        throw new Exception("TradeAnalysis thin-market false positive (volume is deep)");
+    if (!verdicts.Any(v => v.Contains("UNSTABLE: custom")))
+        throw new Exception("TradeAnalysis unstable verdict failed");
+}
+
 Console.WriteLine("Self-tests passed");
 
 sealed class StaticResponseHandler(string body) : HttpMessageHandler

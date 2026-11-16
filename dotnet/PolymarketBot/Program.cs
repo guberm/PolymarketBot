@@ -1103,6 +1103,10 @@ while (!cts.Token.IsCancellationRequested)
                 continue;
             }
 
+            // Audit WHY the ensemble disagrees with the market before committing:
+            // per-provider echo/independent/unstable classification + verdict.
+            TradeAnalysis.LogAnalysis(log, market, estimate, config.DataDir);
+
             // AI estimation may take tens of seconds. Validate the candidate
             // against a fresh, full-size executable ask quote before risk/execution.
             var tokenId = signal.Side == Side.YES ? market.TokenIdYes : market.TokenIdNo;
