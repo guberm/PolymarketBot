@@ -1425,5 +1425,5 @@ static MarketInfo BuildReviewMarket(Position pos)
 // Single source of truth for the release version printed at startup; bump together with the git tag.
 internal static class AppVersion
 {
-    public const string BotVersion = "1.8.3";
+    public const string BotVersion = "1.8.4";
 }
