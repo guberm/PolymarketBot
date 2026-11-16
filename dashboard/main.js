@@ -468,13 +468,28 @@ function stopBotProcess() {
 
 // ── App lifecycle ─────────────────────────────────────────────────────────
 // ── pmb-native.out tail (native launches write here, not through spawn) ──
-let nativeLogPos = 0
+let nativeLogPos = -1  // -1 = seed the panel with the file tail on the first tick
 let nativeLogBuffer = ''
 setInterval(() => {
   try {
     const file = 'C:\\Users\\Public\\pmb-native.out'
     if (!fs.existsSync(file)) return
     const size = fs.statSync(file).size
+    if (nativeLogPos < 0) {
+      // First tick: show only the recent tail — the file holds every past run.
+      try { readLastLines(file, 50).forEach(l => {
+        let entry
+        try {
+          const p = JSON.parse(l)
+          if (p && typeof p === 'object' && p.message !== undefined)
+            entry = { timestamp: p.timestamp || new Date().toISOString(), level: p.level || 'INFO', message: String(p.message) }
+        } catch {}
+        if (!entry) entry = { level: 'INFO', message: l, timestamp: new Date().toISOString() }
+        if (mainWindow) mainWindow.webContents.send('bot-output', entry)
+      }) } catch {}
+      nativeLogPos = size
+      return
+    }
     let fh
     try { fh = fs.openSync(file, 'r') } catch { return }
     try {
