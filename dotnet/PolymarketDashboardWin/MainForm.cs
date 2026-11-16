@@ -47,13 +47,14 @@ public sealed class MainForm : Form
         top.Controls.Add(MakeButton("■ Stop bot", StopBot));
         top.Controls.Add(MakeButton("■ Stop watchdog too", () => RunHidden("schtasks", "/End /TN PMBWatchdog")));
 
-        var bottom = new TableLayoutPanel { Dock = DockStyle.Bottom, Height = 230, ColumnCount = 4, AutoSize = true };
-        bottom.Controls.Add(new Label
+        var bottom = new TableLayoutPanel { Dock = DockStyle.Bottom, Height = 230, ColumnCount = 5, AutoSize = true };
+        var lblHint = new Label
         {
             Text = "Trading settings (Save rewrites config; Start/Stop applies)",
             AutoSize = true,
-        }, 0, 0);
-        bottom.SetColumnSpan(0, 4);
+        };
+        bottom.Controls.Add(lblHint, 0, 0);
+        bottom.SetColumnSpan(lblHint, 5);
         AddNum(bottom, "min_edge", "Min Edge", 1);
         AddNum(bottom, "max_estimate_std", "Max Std", 2);
         AddNum(bottom, "markets_per_cycle", "Markets/Cycle", 3);
