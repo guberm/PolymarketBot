@@ -314,6 +314,25 @@ if (config.LiveTrading)
         if (!geoblock.Blocked)
             break;
 
+        // The .NET TLS fingerprint gets a canned "blocked CA/ON" from the geo
+        // service (bot-flagging) while curl from the same IP sees the real
+        // region — cross-check before refusing.
+        var cross = TradingSafety.CrossCheckGeoblockWithCurl(log);
+        if (cross is false)
+        {
+            log.LogWarning(
+                "Geoblock reported blocked in {Country}/{Region} to the bot UA, but the curl cross-check sees NOT blocked — canned bot-flag response suspected; proceeding",
+                string.IsNullOrEmpty(geoblock.Country) ? "unknown" : geoblock.Country,
+                string.IsNullOrEmpty(geoblock.Region) ? "unknown" : geoblock.Region);
+            break;
+        }
+        if (cross is true)
+        {
+            log.LogCritical("Polymarket live trading is blocked in {Country}/{Region} (curl cross-check confirms); refusing to start",
+                string.IsNullOrEmpty(geoblock.Country) ? "unknown" : geoblock.Country,
+                string.IsNullOrEmpty(geoblock.Region) ? "unknown" : geoblock.Region);
+            return 3;
+        }
         blockedStreak++;
         if (blockedStreak >= 2)
         {
