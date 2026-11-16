@@ -276,22 +276,49 @@ using var cts = new CancellationTokenSource();
 
 if (config.LiveTrading)
 {
+    // The geo-DB behind the geoblock endpoint occasionally misfiles our exit
+    // IP (observed: Helsinki FI/18 read as Ontario CA/ON for ~30 minutes,
+    // then self-corrected). Refuse only on two consecutive blocked readings;
+    // single flaps log a warning and recheck.
     GeoblockStatus geoblock;
-    try
+    var blockedStreak = 0;
+    var netFailures = 0;
+    while (true)
     {
-        geoblock = await TradingSafety.CheckGeoblockAsync(httpClient, cts.Token);
-    }
-    catch (Exception ex)
-    {
-        log.LogCritical(ex, "Cannot verify Polymarket geoblock status; refusing live trading");
-        return 3;
-    }
-    if (geoblock.Blocked)
-    {
-        log.LogCritical("Polymarket live trading is blocked in {Country}/{Region}; refusing to start",
+        try
+        {
+            geoblock = await TradingSafety.CheckGeoblockAsync(httpClient, cts.Token);
+        }
+        catch (Exception ex) when (++netFailures < 3 && !cts.Token.IsCancellationRequested)
+        {
+            log.LogWarning("Geoblock check failed ({Attempt}/3): {Error} — retrying in 5 s",
+                netFailures, ex.Message);
+            await Task.Delay(5000, cts.Token);
+            continue;
+        }
+        catch (Exception ex)
+        {
+            log.LogCritical(ex, "Cannot verify Polymarket geoblock status; refusing live trading");
+            return 3;
+        }
+
+        if (!geoblock.Blocked)
+            break;
+
+        blockedStreak++;
+        if (blockedStreak >= 2)
+        {
+            log.LogCritical("Polymarket live trading is blocked in {Country}/{Region} on {Streak} consecutive checks; refusing to start",
+                string.IsNullOrEmpty(geoblock.Country) ? "unknown" : geoblock.Country,
+                string.IsNullOrEmpty(geoblock.Region) ? "unknown" : geoblock.Region,
+                blockedStreak);
+            return 3;
+        }
+        log.LogWarning("Geoblock reports blocked in {Country}/{Region} (streak {Streak}) — possible geo-DB flap; rechecking in 10 s",
             string.IsNullOrEmpty(geoblock.Country) ? "unknown" : geoblock.Country,
-            string.IsNullOrEmpty(geoblock.Region) ? "unknown" : geoblock.Region);
-        return 3;
+            string.IsNullOrEmpty(geoblock.Region) ? "unknown" : geoblock.Region,
+            blockedStreak);
+        await Task.Delay(10000, cts.Token);
     }
     log.LogInformation("Polymarket geoblock check passed ({Country}/{Region})",
         geoblock.Country, geoblock.Region);
