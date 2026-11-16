@@ -1413,6 +1413,9 @@ const CONFIG_SCHEMA = [
     { key: 'email_password',  label: 'Email Password', ru: 'Email пароль',   type: 'password' },
     { key: 'email_to',        label: 'Email To',       ru: 'Получатель',     type: 'text' },
   ]},
+  { section: 'WATCHDOG', ru: 'ВОССТАНОВЛЕНИЕ', fields: [
+    { key: 'watchdog_enabled', label: 'Watchdog Enabled', ru: 'Смотрящий включён', type: 'bool', default: true },
+  ]},
 ]
 
 let currentConfig = {}
