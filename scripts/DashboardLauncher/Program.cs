@@ -8,9 +8,13 @@ var candidates = new[]
     Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..")),
     @"C:\Users\michael.guber\Desktop\my repos\polymarket_bot",
 };
+const string Trace = @"C:\Users\Public\pmb-launcher.log";
+void T(string msg) { try { File.AppendAllText(Trace, $"{DateTime.Now:HH:mm:ss} {msg}\r\n"); } catch { } }
+T($"exe={AppContext.BaseDirectory}");
 var dashboard = candidates
     .Select(r => Path.Combine(r, "dashboard"))
     .FirstOrDefault(d => File.Exists(Path.Combine(d, "node_modules", "electron", "dist", "electron.exe")));
+T($"dashboard={dashboard ?? "NOT FOUND"}");
 
 if (dashboard is null)
 {
@@ -20,9 +24,14 @@ if (dashboard is null)
     return;
 }
 
-Process.Start(new ProcessStartInfo(
-    Path.Combine(dashboard, "node_modules", "electron", "dist", "electron.exe"), ".")
+try
 {
-    WorkingDirectory = dashboard,
-    UseShellExecute = false,
-});
+    Process.Start(new ProcessStartInfo(
+        Path.Combine(dashboard, "node_modules", "electron", "dist", "electron.exe"), ".")
+    {
+        WorkingDirectory = dashboard,
+        UseShellExecute = false,
+    });
+    T("electron started");
+}
+catch (Exception ex) { T($"start FAILED: {ex.Message}"); MessageBox.Show(ex.Message); }
