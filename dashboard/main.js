@@ -296,7 +296,13 @@ function setupIPC() {
       // the bot detached (proxy env composed from polymarket_bot_config.json)
       // and auto-restarts it on death. The dashboard only views the log.
       try {
-        const out = execFileSync('schtasks', ['/Run', '/TN', 'PMBWatchdog'], { encoding: 'utf8' })
+        // Task instance is usually already running — that is fine, the watchdog
+        // revives the bot within 5 min; only a missing task is a real failure.
+        try {
+          execFileSync('schtasks', ['/Run', '/TN', 'PMBWatchdogExe'], { encoding: 'utf8' })
+        } catch (e) {
+          if (!String(e).includes('already running')) throw e
+        }
         return { pid: 0, native: true, output: out.trim() }
       } catch (e) {
         return { error: e.message }
@@ -441,7 +447,7 @@ function setupIPC() {
 function stopBotProcess() {
   // Native stop: end the watchdog task (so it does not revive the bot), then
   // kill any running bot processes.
-  try { execFileSync('schtasks', ['/End', '/TN', 'PMBWatchdog'], { encoding: 'utf8' }) } catch {}
+  try { execFileSync('schtasks', ['/End', '/TN', 'PMBWatchdogExe'], { encoding: 'utf8' }) } catch {}
   try { execFileSync('taskkill', ['/F', '/IM', 'dotnet.exe'], { encoding: 'utf8' }) } catch {}
   botProcess = null
   if (!botProcess || botProcess.killed) return Promise.resolve()
