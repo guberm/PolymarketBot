@@ -292,17 +292,14 @@ function setupIPC() {
       ;({ cmd, args, cwd, useShell } = launch)
       activeVpn = { distro: config.vpn_wsl_distro || 'Ubuntu', scriptPath: path.join(__dirname, 'vpn-runner.sh') }
     } else if (opts.mode === 'dotnet') {
-      // Native launch: delegate to the PMBWatchdog scheduled task — it starts
+      const watchdogExe = 'C:\\Users\\michael.guber\\Desktop\\my repos\\polymarket_bot\\scripts\\WatchdogWin\\bin\\Release\\net8.0\\win-x64\\publish\\PMBWatchdog.exe'
+      // Native launch: spawn the watchdog exe directly (scheduled-task /Run is
+      // account-bound and fails with Access denied from another user session).
+      // The watchdog itself checks dotnet: alive → it just waits; dead → starts
       // the bot detached (proxy env composed from polymarket_bot_config.json)
       // and auto-restarts it on death. The dashboard only views the log.
       try {
-        // Task instance is usually already running — that is fine, the watchdog
-        // revives the bot within 5 min; only a missing task is a real failure.
-        try {
-          execFileSync('schtasks', ['/Run', '/TN', 'PMBWatchdogExe'], { encoding: 'utf8' })
-        } catch (e) {
-          if (!String(e).includes('already running')) throw e
-        }
+        spawn(watchdogExe, [], { detached: true, stdio: 'ignore' }).unref()
         return { pid: 0, native: true, output: out.trim() }
       } catch (e) {
         return { error: e.message }
@@ -478,7 +475,7 @@ let nativeLogPos = -1  // -1 = seed the panel with the file tail on the first ti
 let nativeLogBuffer = ''
 setInterval(() => {
   try {
-    const file = 'C:\\Users\\Public\\pmb-native.out'
+    const file = 'C:\\Users\\Public\\pmb-native.out' 
     if (!fs.existsSync(file)) return
     const size = fs.statSync(file).size
     if (nativeLogPos < 0) {
