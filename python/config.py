@@ -7,7 +7,7 @@ Priority (highest wins):
 """
 
 # Release version printed in the startup banner; bump together with the git tag.
-BOT_VERSION = "1.8.4"
+BOT_VERSION = "1.8.5"
 
 import json
 import os
