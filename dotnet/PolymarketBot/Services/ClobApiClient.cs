@@ -201,7 +201,6 @@ public sealed class ClobApiClient
         // For GTC BUY: takerAmount = tokens to receive (max 2 dp), makerAmount = USDC to spend (max 4 dp)
         // CLOB derives price = maker/taker and validates it matches tick size
         double rawTaker = Math.Round(amountUsd / roundedPrice, 2);
-        double rawMaker = Math.Round(rawTaker * roundedPrice, 4);
 
         // CLOB enforces minimum order size of 5 tokens
         if (rawTaker < 5.0)
@@ -211,9 +210,15 @@ public sealed class ClobApiClient
             return null;
         }
 
-        // Use Math.Round (not Floor) to avoid floating-point precision loss
-        long makerAmount = (long)Math.Round(rawMaker * 1_000_000);
+        // Integer tick arithmetic (same approach as the SELL path below): compute
+        // makerAmount from takerAmount * priceInTicks / ticksPerUnit so the CLOB's
+        // derived price maker/taker is an EXACT tick multiple. The previous float
+        // version (Round(rawTaker * price, 4)) drifted off the tick: e.g. 4382010/5430000
+        // = 0.806998... → CLOB rejected "breaks minimum tick size rule 0.001".
         long takerAmount = (long)Math.Round(rawTaker * 1_000_000);
+        long ticksPerUnit = (long)Math.Round(1.0 / tickSizeD);
+        long priceInTicks = (long)Math.Round(roundedPrice / tickSizeD);
+        long makerAmount = takerAmount * priceInTicks / ticksPerUnit;
 
         if (makerAmount <= 0 || takerAmount <= 0)
         {
