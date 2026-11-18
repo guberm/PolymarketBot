@@ -487,6 +487,9 @@ setInterval(() => {
     if (nativeLogPos < 0) {
       // First tick: show only the recent tail — the file holds every past run.
       try { readLastLines(file, 50).forEach(l => {
+        // bot.log JSON records must not leak into the native console feed —
+        // they belong to the bot.log pipeline and would show stale ghosts.
+        if (l.startsWith('{"timestamp"')) return
         let entry
         try {
           const p = JSON.parse(l)
@@ -512,7 +515,9 @@ setInterval(() => {
       if (!text) return
       const parsed = parseProcessLogChunk(nativeLogBuffer, text, 'INFO')
       nativeLogBuffer = parsed.remaining
-      if (mainWindow) parsed.entries.forEach(entry => mainWindow.webContents.send('bot-output', entry))
+      // skip bot.log JSON records that a redirect may have dropped in here
+      const entries = parsed.entries.filter(e => !String(e.message).startsWith('{"timestamp"'))
+      if (mainWindow) entries.forEach(entry => mainWindow.webContents.send('bot-output', entry))
     } finally { fs.closeSync(fh) }
   } catch { /* file held mid-write - next tick retries */ }
 }, 2000)
