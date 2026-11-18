@@ -80,8 +80,14 @@ Directory.CreateDirectory(config.DataDir);
 using var instanceLock = new InstanceLock(config.DataDir);
 if (!instanceLock.Acquire())
 {
-    Console.Error.WriteLine($"Another bot instance owns {Path.Combine(config.DataDir, "bot.lock")}; refusing to start");
-    return 2;
+    // Takeover: a user-initiated start replaces the running instance.
+    Console.Error.WriteLine($"Another bot instance owns {Path.Combine(config.DataDir, "bot.lock")} — killing it and taking over");
+    if (!instanceLock.KillOwnerAndClear() || !instanceLock.Acquire())
+    {
+        Console.Error.WriteLine("Could not take over the bot lock; refusing to start (delete data/bot.lock manually)");
+        return 2;
+    }
+    Console.Error.WriteLine("Previous instance killed — lock acquired");
 }
 
 // JSON file logger (matches Python's JsonFormatter → data/bot.log)

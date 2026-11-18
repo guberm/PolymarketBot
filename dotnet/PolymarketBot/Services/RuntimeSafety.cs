@@ -197,6 +197,50 @@ public sealed class InstanceLock : IDisposable
         _acquired = false;
     }
 
+    /// <summary>
+    /// User-initiated takeover: kill the bot process that owns the lock (a new
+    /// start replaces the old instance), then clear the lock. Returns false when
+    /// the owner cannot be identified safely — the caller keeps refusing to start.
+    /// </summary>
+    public bool KillOwnerAndClear()
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(File.ReadAllText(_path));
+            var pid = doc.RootElement.GetProperty("pid").GetInt32();
+            if (pid <= 0) return false;
+            Process owner;
+            if (OperatingSystem.IsLinux())
+            {
+                var cmdline = System.Text.Encoding.UTF8.GetString(File.ReadAllBytes($"/proc/{pid}/cmdline")).ToLowerInvariant();
+                if (!cmdline.Contains("polymarketbot") && !cmdline.Contains("main.py")) return false;
+                owner = Process.GetProcessById(pid);
+            }
+            else
+            {
+                owner = Process.GetProcessById(pid);
+                var pname = owner.ProcessName.ToLowerInvariant();
+                if (!pname.Contains("dotnet") && !pname.Contains("polymarket")) return false;
+            }
+            owner.Kill(entireProcessTree: true);
+            owner.WaitForExit(20_000);
+            try { File.Delete(_path); } catch (IOException) { }
+            return true;
+        }
+        catch (ArgumentException)
+        {
+            // Owner already gone — the lock is stale, clear it.
+            try { File.Delete(_path); } catch (IOException) { }
+            return true;
+        }
+        catch (Exception)
+        {
+            // Cannot identify/kill the owner (access denied across sessions etc.) —
+            // refuse to act rather than kill an unknown process.
+            return false;
+        }
+    }
+
     private bool OwnerAlive()
     {
         try
