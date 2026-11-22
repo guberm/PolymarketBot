@@ -78,9 +78,6 @@ class Portfolio:
     def equity(self) -> float:
         return self.bankroll + self.liquidation_value()
 
-    def should_defer_risk_check(self) -> bool:
-        return any(position.quote_failures > 0 for position in self.positions)
-
     def category_exposure(self, category: str) -> float:
         return sum(p.size_usd for p in self.positions if p.category == category)
 
@@ -222,11 +219,11 @@ class Portfolio:
     # ── Risk checks ───────────────────────────────────────────────────
 
     def check_portfolio_risk(self) -> bool:
-        """Return True if portfolio-wide risk limits allow new market scans/trades."""
-        if self.should_defer_risk_check():
-            log.warning("Portfolio risk check deferred because position quotes are unavailable")
-            return True
+        """Return True if portfolio-wide risk limits allow new market scans/trades.
 
+        Unquotable positions are held at haircut values, so risk metrics stay
+        computable and the market scan is never deferred for stale quotes.
+        """
         # Daily stop loss uses executable liquidation value, not cost basis.
         portfolio_value = self.equity()
         daily_pnl = portfolio_value - self.daily_start_value
@@ -399,19 +396,24 @@ class Portfolio:
                 pos.quote_failures += 1
                 if pos.last_fresh_price <= 0:
                     pos.last_fresh_price = pos.current_price
+                # Never zero the valuation: a dead market would otherwise freeze
+                # risk numbers and block every market scan. Hold at haircut value.
                 fallback = pos.last_fresh_price
-                if fallback > 0 and pos.quote_failures < max(1, self.config.quote_failure_grace_cycles):
-                    pos.current_price = fallback * (1.0 - self.config.stale_quote_haircut_pct)
-                    pos.unrealized_pnl = pos.shares * (pos.current_price - pos.entry_price)
+                if fallback <= 0:
+                    fallback = pos.entry_price
+                pos.current_price = fallback * (1.0 - self.config.stale_quote_haircut_pct)
+                pos.unrealized_pnl = pos.shares * (pos.current_price - pos.entry_price)
+                if pos.quote_failures <= max(1, self.config.quote_failure_grace_cycles):
                     log.warning(
                         f"Quote unavailable for {pos.question[:40]}...; using "
                         f"{self.config.stale_quote_haircut_pct:.0%} haircut "
                         f"({pos.quote_failures}/{self.config.quote_failure_grace_cycles - 1} grace cycles)"
                     )
-                else:
-                    pos.current_price = 0.0
-                    pos.unrealized_pnl = -pos.size_usd
-                    log.error(f"Quote grace exhausted for {pos.question[:40]}...; liquidation value set to zero")
+                elif pos.quote_failures == max(1, self.config.quote_failure_grace_cycles) + 1:
+                    log.warning(
+                        f"Quote grace exhausted for {pos.question[:40]}...; "
+                        f"holding at {self.config.stale_quote_haircut_pct:.0%} haircut until quotes return"
+                    )
                 pos.liquidation_limit_price = 0.0
                 pos.book_depth_complete = False
                 pos.quote_age_seconds = 0.0

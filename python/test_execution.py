@@ -140,7 +140,7 @@ class LiquidationEquityTests(unittest.TestCase):
         self.assertTrue(portfolio.check_portfolio_risk())
         self.assertFalse(portfolio.is_halted)
 
-    def test_missing_position_quotes_defer_risk_check(self):
+    def test_missing_position_quotes_hold_haircut_without_deferral(self):
         portfolio = Portfolio(BotConfig(initial_bankroll=.98, quote_failure_grace_cycles=3))
         portfolio.positions = [
             Position("market", "Quote outage", Side.YES, "token", .5, 5, 10, .4, -1, "test")
@@ -149,8 +149,9 @@ class LiquidationEquityTests(unittest.TestCase):
         for _ in range(3):
             portfolio.update_position_quotes({})
 
-        self.assertEqual(portfolio.positions[0].current_price, 0)
-        self.assertTrue(portfolio.should_defer_risk_check())
+        # Grace exhausted: held at the haircut value forever — never zeroed,
+        # never deferred; risk checks and the scan keep running.
+        self.assertAlmostEqual(portfolio.positions[0].current_price, 0.3)
         self.assertTrue(portfolio.check_portfolio_risk())
         self.assertFalse(portfolio.is_halted)
 

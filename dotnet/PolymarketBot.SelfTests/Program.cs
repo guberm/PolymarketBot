@@ -260,11 +260,12 @@ if (gracePortfolio.GenerateExitSignals().Count != 0)
     throw new Exception("Fallback quote valuation must not create an executable exit signal");
 gracePortfolio.UpdatePositionQuotes(new Dictionary<string, ExecutionQuote>());
 gracePortfolio.UpdatePositionQuotes(new Dictionary<string, ExecutionQuote>());
-Near(0, gracePortfolio.Positions[0].CurrentPrice);
-if (!gracePortfolio.ShouldDeferRiskCheck() || gracePortfolio.IsHalted)
-    throw new Exception("Missing position quotes should defer risk evaluation without halting");
+// Grace exhausted: held at the haircut value forever — never zeroed, never deferred.
+Near(.3, gracePortfolio.Positions[0].CurrentPrice);
+if (gracePortfolio.GenerateExitSignals().Count != 0)
+    throw new Exception("Haircut-held position must not create an executable exit signal");
 if (!gracePortfolio.CheckPortfolioRisk() || gracePortfolio.IsHalted)
-    throw new Exception("Deferred risk evaluation must not mark a quote outage as portfolio death");
+    throw new Exception("Quote outage must not halt the portfolio");
 
 var freshExitPortfolio = new Portfolio(new BotConfig(), loggerFactory.CreateLogger<Portfolio>());
 freshExitPortfolio.Positions.Add(new Position { ConditionId = "f", Question = "f", Side = Side.YES,

@@ -116,7 +116,7 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(retry_delay_seconds(None, 2), 4)
         self.assertEqual(retry_delay_seconds("999", 0), 60)
 
-    def test_quote_failure_uses_haircut_then_zero(self):
+    def test_quote_failure_uses_haircut_then_holds(self):
         portfolio = Portfolio(BotConfig(quote_failure_grace_cycles=3, stale_quote_haircut_pct=0.25))
         portfolio.positions = [Position("m", "q", Side.YES, "t", .5, 5, 10, .4, -1, "x")]
         portfolio.update_position_quotes({})
@@ -124,8 +124,11 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(portfolio.generate_exit_signals(), [])
         portfolio.update_position_quotes({})
         self.assertAlmostEqual(portfolio.positions[0].current_price, .3)
+        # Grace exhausted: held at the haircut value forever (never zeroed) —
+        # a dead market must not freeze risk numbers or block market scans.
         portfolio.update_position_quotes({})
-        self.assertEqual(portfolio.positions[0].current_price, 0)
+        self.assertAlmostEqual(portfolio.positions[0].current_price, .3)
+        self.assertTrue(portfolio.check_portfolio_risk())
 
         fresh = Portfolio(BotConfig())
         fresh.positions = [Position("m", "q", Side.YES, "t", .5, 5, 10, .4, -1, "x")]

@@ -96,8 +96,6 @@ public sealed class Portfolio
 
     public double Equity() => Bankroll + LiquidationValue();
 
-    public bool ShouldDeferRiskCheck() => Positions.Any(p => p.QuoteFailures > 0);
-
     public double CategoryExposure(string category)
         => Positions.Where(p => p.Category == category).Sum(p => p.SizeUsd);
 
@@ -232,13 +230,9 @@ public sealed class Portfolio
 
     public bool CheckPortfolioRisk()
     {
-        if (ShouldDeferRiskCheck())
-        {
-            _log.LogWarning("Portfolio risk check deferred because position quotes are unavailable");
-            return true;
-        }
-
         // Daily stop loss uses executable liquidation value, not cost basis.
+        // Unquotable positions are held at haircut values, so risk metrics stay
+        // computable and the market scan is never deferred for stale quotes.
         var portfolioValue = Equity();
         var dailyPnl = portfolioValue - DailyStartValue;
         var dailyStopLossPct = _config.LiveTrading && !_config.AllowUnsafeRisk
@@ -440,21 +434,23 @@ public sealed class Portfolio
             {
                 pos.QuoteFailures++;
                 if (pos.LastFreshPrice <= 0) pos.LastFreshPrice = pos.CurrentPrice;
+                // Never zero the valuation: a dead market (no bid depth) would
+                // otherwise freeze risk numbers and block every market scan.
+                // Hold the position at the haircut value for as long as needed.
                 var fallback = pos.LastFreshPrice;
-                if (fallback > 0 && pos.QuoteFailures < Math.Max(1, _config.QuoteFailureGraceCycles))
+                if (fallback <= 0) fallback = pos.EntryPrice;
+                pos.CurrentPrice = fallback * (1 - _config.StaleQuoteHaircutPct);
+                pos.UnrealizedPnl = pos.Shares * (pos.CurrentPrice - pos.EntryPrice);
+                if (pos.QuoteFailures <= Math.Max(1, _config.QuoteFailureGraceCycles))
                 {
-                    pos.CurrentPrice = fallback * (1 - _config.StaleQuoteHaircutPct);
-                    pos.UnrealizedPnl = pos.Shares * (pos.CurrentPrice - pos.EntryPrice);
                     _log.LogWarning("Quote unavailable for {Question}; using {Haircut:P0} haircut ({Failures}/{Grace} grace cycles)",
                         Truncate(pos.Question, 40), _config.StaleQuoteHaircutPct, pos.QuoteFailures,
                         _config.QuoteFailureGraceCycles - 1);
                 }
-                else
+                else if (pos.QuoteFailures == Math.Max(1, _config.QuoteFailureGraceCycles) + 1)
                 {
-                    pos.CurrentPrice = 0;
-                    pos.UnrealizedPnl = -pos.SizeUsd;
-                    _log.LogError("Quote grace exhausted for {Question}; liquidation value set to zero",
-                        Truncate(pos.Question, 40));
+                    _log.LogWarning("Quote grace exhausted for {Question}; holding at {Haircut:P0} haircut until quotes return",
+                        Truncate(pos.Question, 40), _config.StaleQuoteHaircutPct);
                 }
                 pos.LiquidationLimitPrice = 0;
                 pos.BookDepthComplete = false;
