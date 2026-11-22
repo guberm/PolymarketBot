@@ -1355,6 +1355,7 @@ const CONFIG_SCHEMA = [
     { key: 'llm_cost_tracking_enabled', label: 'Track LLM Costs', ru: 'Отслеживать расходы LLM', type: 'bool' },
     { key: 'ensemble_size',        label: 'Ensemble Size',   ru: 'Размер ансамбля',  type: 'number', step: 1 },
     { key: 'ensemble_temperature', label: 'Temperature',     ru: 'Температура',      type: 'number', step: 0.1 },
+    { key: 'custom_temperature', label: 'Custom Temperature', ru: 'Температура custom', type: 'number', step: 0.1 },
     { key: 'max_estimate_tokens',  label: 'Max Tokens',      ru: 'Макс. токенов',    type: 'number', step: 64 },
     { key: 'max_estimate_std',     label: 'Max Std Dev',     ru: 'Макс. разброс',    type: 'number', step: 0.01 },
     { key: 'max_cycle_api_cost_usd', label: 'Cycle API Budget $', ru: 'API бюджет цикла $', type: 'number', step: 0.05 },
@@ -1417,8 +1418,8 @@ const CONFIG_SCHEMA = [
     { key: 'watchdog_enabled', label: 'Watchdog Enabled', ru: 'Смотрящий включён', type: 'bool', default: true },
   ]},
   { section: 'RESEARCH JUDGE', ru: 'ИССЛЕДОВАТЕЛЬ', fields: [
-    { key: '[[sg:RESEARCH_JUDGE_ENABLED]]', label: 'Research Judge Enabled', ru: 'Судья новостей перед сделкой', type: 'bool', default: true },
-    { key: '[[sg:RESEARCH_MAX_NEWS]]', label: 'Max News Headlines', ru: 'Максимум новостей', type: 'number', step: 1 },
+    { key: 'research_judge_enabled', label: 'Research Judge Enabled', ru: 'Судья новостей перед сделкой', type: 'bool', default: true },
+    { key: 'research_max_news', label: 'Max News Headlines', ru: 'Максимум новостей', type: 'number', step: 1 },
   ]},
 ]
 
