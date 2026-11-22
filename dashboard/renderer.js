@@ -1416,6 +1416,10 @@ const CONFIG_SCHEMA = [
   { section: 'WATCHDOG', ru: 'ВОССТАНОВЛЕНИЕ', fields: [
     { key: 'watchdog_enabled', label: 'Watchdog Enabled', ru: 'Смотрящий включён', type: 'bool', default: true },
   ]},
+  { section: 'RESEARCH JUDGE', ru: 'ИССЛЕДОВАТЕЛЬ', fields: [
+    { key: '[[sg:RESEARCH_JUDGE_ENABLED]]', label: 'Research Judge Enabled', ru: 'Судья новостей перед сделкой', type: 'bool', default: true },
+    { key: '[[sg:RESEARCH_MAX_NEWS]]', label: 'Max News Headlines', ru: 'Максимум новостей', type: 'number', step: 1 },
+  ]},
 ]
 
 let currentConfig = {}

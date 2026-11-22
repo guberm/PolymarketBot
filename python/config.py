@@ -90,6 +90,10 @@ class BotConfig:
     multi_provider: bool = False     # True = query ALL configured providers and aggregate
     weather_estimator_enabled: bool = False
 
+    # Research judge: news-based veto before order execution
+    research_judge_enabled: bool = True
+    research_max_news: int = 8
+
     # Per-provider credentials + models
     # Anthropic
     anthropic_enabled: bool = True
@@ -253,6 +257,8 @@ class BotConfig:
             ai_provider=get("ai_provider", "anthropic"),
             multi_provider=get("multi_provider", False),
             weather_estimator_enabled=get("weather_estimator_enabled", False),
+            research_judge_enabled=bool(get("research_judge_enabled", True)),
+            research_max_news=int(get("research_max_news", 8)),
             anthropic_enabled=get("anthropic_enabled", True),
             anthropic_api_key=get("anthropic_api_key", ""),
             anthropic_api_host=get("anthropic_api_host", "https://api.anthropic.com"),

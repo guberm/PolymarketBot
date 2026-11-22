@@ -991,6 +991,33 @@ def main():
                     )
                     continue
 
+                # Research judge: news-based veto before execution (.NET parity)
+                if config.research_judge_enabled:
+                    from research_judge import fetch_news, judge_sync
+                    news = fetch_news(market.question, getattr(config, "research_max_news", 8))
+                    verdict = (judge_sync(config, market.question, signal_obj.side.value,
+                                          signal_obj.execution_price, estimate.fair_probability, news)
+                               if news else
+                               __import__("research_judge").ResearchVerdict("UNCLEAR", 0.0,
+                                                                           "no recent news found", 0))
+                    log.info(
+                        f"  [{i}/{len(eligible)}] RESEARCH {verdict.verdict} "
+                        f"({verdict.confidence:.0%}, news={verdict.news_count}): {verdict.reason}"
+                    )
+                    if con:
+                        print(f"[{ts()}]   [{i:>2}/{len(eligible)}] RESEARCH: {verdict.verdict} — {verdict.reason}")
+                    if verdict.verdict == "DENY":
+                        append_estimate_evaluation(
+                            market, estimate, config.data_dir,
+                            "multi" if config.multi_provider else config.ai_provider,
+                            "skip", "research_denied", signal_obj, kalshi_reference, False,
+                            run_id=run_id, cycle_id=f"{run_id}:{cycle}",
+                            wallet_flow_reference=wallet_flow_reference,
+                        )
+                        notifier.notify_buy_fail(market, signal_obj,
+                                                 f"research judge DENY: {verdict.reason}")
+                        continue
+
                 # Execute
                 log.info(
                     f"  [{i}/{len(eligible)}] >>> BUYING {signal_obj.side.value} "

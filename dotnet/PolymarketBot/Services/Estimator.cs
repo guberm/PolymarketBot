@@ -501,14 +501,14 @@ public sealed class Estimator
 
     // ── Anthropic ──────────────────────────────────────────────────────────
 
-    private async Task<(int, string, string?)> MakeAnthropicRequestAsync(string userPrompt, CancellationToken ct)
+    private async Task<(int, string, string?)> MakeAnthropicRequestAsync(string userPrompt, CancellationToken ct, string? systemPrompt = null)
     {
         var body = JsonSerializer.Serialize(new
         {
             model = GetModelForProvider("anthropic"),
             max_tokens = _config.MaxEstimateTokens,
             temperature = _config.EnsembleTemperature,
-            system = SystemPrompt,
+            system = systemPrompt ?? SystemPrompt,
             messages = new[] { new { role = "user", content = userPrompt } }
         });
         var host = string.IsNullOrEmpty(_config.AnthropicApiHost) ? "https://api.anthropic.com" : _config.AnthropicApiHost;
@@ -520,6 +520,38 @@ public sealed class Estimator
         req.Headers.Add("anthropic-version", "2023-06-01");
         using var resp = await _http.SendAsync(req, ct);
         return ((int)resp.StatusCode, await resp.Content.ReadAsStringAsync(ct), RetryAfter(resp));
+    }
+
+    /// <summary>
+    /// One-shot free-form completion through anthropic for auxiliary roles
+    /// (research judge). Returns the raw text, or null on any failure —
+    /// callers must fail open.
+    /// </summary>
+    public async Task<string?> CompleteOnceAsync(string systemPrompt, string userPrompt, CancellationToken ct = default)
+    {
+        try
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeout.CancelAfter(TimeSpan.FromSeconds(100));
+            var (status, body, _) = await MakeAnthropicRequestAsync(userPrompt, timeout.Token, systemPrompt);
+            if (status != 200)
+            {
+                _log.LogWarning("CompleteOnceAsync: anthropic returned {Status}", status);
+                return null;
+            }
+            using var doc = JsonDocument.Parse(body);
+            return doc.RootElement.GetProperty("content")[0].GetProperty("text").GetString()?.Trim();
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            _log.LogWarning("CompleteOnceAsync timed out");
+            return null;
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning("CompleteOnceAsync failed: {Err}", ex.Message);
+            return null;
+        }
     }
 
     private static CallResult? ParseAnthropicResponse(string body)

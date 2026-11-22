@@ -91,6 +91,10 @@ public sealed class BotConfig
     public double MaxCycleApiCostUsd { get; init; } = 1.00;
     public double MaxDailyApiCostUsd { get; init; } = 10.00;
     public string ApiPricing { get; init; } = "anthropic=3/15,openai=5/15,gemini=0.10/0.40,openrouter=3/15,azure_openai=5/15";
+
+    // Research judge: news-based veto before order execution
+    public bool ResearchJudgeEnabled { get; init; } = true;
+    public int ResearchMaxNews { get; init; } = 8;
     public bool CalibrationWeightingEnabled { get; init; } = false;
     public int CalibrationMinSamples { get; init; } = 40;
     public double CalibrationShrinkage { get; init; } = 0.50;
@@ -244,6 +248,8 @@ public sealed class BotConfig
             MaxEstimateTokens = int.Parse(Cfg("max_estimate_tokens", "MAX_ESTIMATE_TOKENS", "1024")),
             MaxEstimateStd = double.Parse(Cfg("max_estimate_std", "MAX_ESTIMATE_STD", "0.10")),
             WeatherEstimatorEnabled = Cfg("weather_estimator_enabled", "WEATHER_ESTIMATOR_ENABLED", "false").Equals("true", StringComparison.OrdinalIgnoreCase),
+            ResearchJudgeEnabled = Cfg("research_judge_enabled", "RESEARCH_JUDGE_ENABLED", "true").Equals("true", StringComparison.OrdinalIgnoreCase),
+            ResearchMaxNews = int.Parse(Cfg("research_max_news", "RESEARCH_MAX_NEWS", "8")),
             LlmCostTrackingEnabled = Cfg("llm_cost_tracking_enabled", "LLM_COST_TRACKING_ENABLED", "true").Equals("true", StringComparison.OrdinalIgnoreCase),
             MaxCycleApiCostUsd = double.Parse(Cfg("max_cycle_api_cost_usd", "MAX_CYCLE_API_COST_USD", "1.00")),
             MaxDailyApiCostUsd = double.Parse(Cfg("max_daily_api_cost_usd", "MAX_DAILY_API_COST_USD", "10.00")),

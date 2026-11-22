@@ -345,6 +345,7 @@ if (config.LiveTrading)
 
 var scanner = new MarketScanner(config, httpClient, loggerFactory.CreateLogger<MarketScanner>());
 var estimator = new Estimator(config, httpClient, loggerFactory.CreateLogger<Estimator>());
+var researchJudge = new ResearchJudge(config, httpClient, estimator, loggerFactory.CreateLogger<ResearchJudge>());
 var kalshiShadow = config.KalshiShadowEnabled
     ? new KalshiShadow(config, httpClient, loggerFactory.CreateLogger<KalshiShadow>())
     : null;
@@ -1211,6 +1212,27 @@ while (!cts.Token.IsCancellationRequested)
                     "skip", "risk_blocked", config.DataDir, kalshiReference, trackWatch: false,
                     runId: runId, cycleId: $"{runId}:{cycle}", walletFlowReference: walletFlowReference);
                 continue;
+            }
+
+            // Research judge: news-based veto before execution (feature request).
+            var researchVerdict = await researchJudge.EvaluateAsync(
+                market, signal.ExecutionPrice, estimate.FairProbability, signal.Side.ToString(), cts.Token);
+            if (researchVerdict is not null)
+            {
+                log.LogInformation(
+                    "  {Idx} RESEARCH {Verdict} ({Conf:P0}, news={N}): {Reason}",
+                    idx, researchVerdict.Verdict, researchVerdict.Confidence,
+                    researchVerdict.NewsCount, researchVerdict.Reason);
+                Con($"  {idx} RESEARCH: {researchVerdict.Verdict} — {researchVerdict.Reason}");
+                if (researchVerdict.Verdict == "DENY")
+                {
+                    PersistenceService.AppendEstimateEvaluation(market, estimate, signal,
+                        config.MultiProvider ? "multi" : config.AiProvider,
+                        "skip", "research_denied", config.DataDir, kalshiReference, trackWatch: false,
+                        runId: runId, cycleId: $"{runId}:{cycle}", walletFlowReference: walletFlowReference);
+                    notifier.NotifyBuyFail(signal.Market, signal, $"research judge DENY: {researchVerdict.Reason}");
+                    continue;
+                }
             }
 
             // Execute

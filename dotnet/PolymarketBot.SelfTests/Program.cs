@@ -805,6 +805,20 @@ Directory.Delete(breakerDir, true);
         throw new Exception("TradeAnalysis unstable verdict failed");
 }
 
+// ── ResearchJudge: verdict parsing ─────────────────────────────────────────
+{
+    var ok = ResearchJudge.ParseVerdict("{\"verdict\":\"DENY\",\"confidence\":0.9,\"reason\":\"event already happened\"}", 8);
+    if (ok.Verdict != "DENY" || Math.Abs(ok.Confidence - 0.9) > 1e-9 || ok.NewsCount != 8)
+        throw new Exception("ResearchJudge DENY parse failed");
+    var confirm = ResearchJudge.ParseVerdict("Sure! {\"verdict\":\"CONFIRM\",\"confidence\":0.7,\"reason\":\"news supports\"}", 5);
+    if (confirm.Verdict != "CONFIRM") throw new Exception("ResearchJudge CONFIRM parse (embedded prose) failed");
+    var unclear = ResearchJudge.ParseVerdict("I cannot answer in JSON.", 3);
+    if (unclear.Verdict != "UNCLEAR") throw new Exception("ResearchJudge garbage fallback failed");
+    var badverdict = ResearchJudge.ParseVerdict("{\"verdict\":\"MAYBE\",\"confidence\":2.0,\"reason\":\"x\"}", 2);
+    if (badverdict.Verdict != "UNCLEAR" || Math.Abs(badverdict.Confidence - 1.0) > 1e-9)
+        throw new Exception("ResearchJudge invalid-verdict clamping failed");
+}
+
 Console.WriteLine("Self-tests passed");
 
 sealed class StaticResponseHandler(string body) : HttpMessageHandler
